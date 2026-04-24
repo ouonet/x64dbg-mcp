@@ -144,8 +144,8 @@ async function waitForBridge(
       logger.info("Bridge port is reachable");
       return;
     }
-
-    await new Promise((r) => setTimeout(r, BRIDGE_POLL_INTERVAL_MS));
+    // No extra sleep here: the socket timeout (BRIDGE_POLL_INTERVAL_MS) already
+    // provides the inter-probe delay, avoiding a doubled wait per iteration.
   }
 
   throw new Error(
@@ -161,7 +161,7 @@ async function waitForBridge(
  */
 export async function launchDebugger(
   targetExe: string,
-  cmdLineArgs?: string
+  _cmdLineArgs?: string
 ): Promise<"x86" | "x64"> {
   if (!fs.existsSync(targetExe)) {
     throw new Error(`Target executable not found: ${targetExe}`);

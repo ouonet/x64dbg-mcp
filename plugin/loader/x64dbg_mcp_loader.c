@@ -138,19 +138,111 @@ static void debugFileLog(const char* msg) {
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
 }
 
-/* Try to load Python DLL -- prefer pythonXY.dll directly to avoid
-   the python3.dll stub dependency resolution issues. */
-static BOOL loadPython(void) {
-    const char* envPath;
+/* --------------------------------------------------------------------------
+ * Load Python DLL from a given directory.
+ * Adds the directory to the DLL search path, then tries the versioned DLL
+ * (e.g. python314.dll) first, then the stable-ABI stub (python3.dll).
+ * -------------------------------------------------------------------------- */
+static BOOL loadPythonFromDir(const char* dir) {
     char dllPath[MAX_PATH];
-    DWORD err;
+    char msg[MAX_PATH + 64];
 
-    /* Add plugin dir to DLL search path for transitive dependencies */
-    if (pluginDir[0] != '\0') {
-        SetDllDirectoryA(pluginDir);
+    /* Extend DLL search path so transitive dependencies resolve */
+    wchar_t wDir[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, dir, -1, wDir, MAX_PATH);
+    AddDllDirectory(wDir);
+
+    /* Scan for highest versioned pythonXY.dll */
+    WIN32_FIND_DATAA fd;
+    char searchPat[MAX_PATH];
+    char bestDll[MAX_PATH] = {0};
+    int  bestVer = 0;
+    snprintf(searchPat, MAX_PATH, "%s\\python3*.dll", dir);
+    HANDLE hFind = FindFirstFileA(searchPat, &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            const char* name = fd.cFileName;
+            if (_stricmp(name, "python3.dll") == 0) continue;
+            int ver = 0;
+            if (_strnicmp(name, "python3", 7) == 0) ver = atoi(name + 7);
+            if (ver > bestVer) {
+                bestVer = ver;
+                snprintf(bestDll, MAX_PATH, "%s\\%s", dir, name);
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
     }
 
-    /* Strategy 0: scan plugin dir for any pythonXXX.dll (highest version first) */
+    if (bestDll[0] != '\0') {
+        hPython = LoadLibraryA(bestDll);
+        if (hPython) {
+            snprintf(msg, sizeof(msg), "loadPythonFromDir: loaded %s", bestDll);
+            debugFileLog(msg);
+            return TRUE;
+        }
+    }
+
+    /* Fallback: stable-ABI stub */
+    snprintf(dllPath, MAX_PATH, "%s\\python3.dll", dir);
+    hPython = LoadLibraryA(dllPath);
+    if (hPython) {
+        snprintf(msg, sizeof(msg), "loadPythonFromDir: loaded python3.dll from %s", dir);
+        debugFileLog(msg);
+        return TRUE;
+    }
+
+    snprintf(msg, sizeof(msg), "loadPythonFromDir: nothing loaded from %s", dir);
+    debugFileLog(msg);
+    return FALSE;
+}
+
+/* Try to load Python DLL.
+ *
+ * Priority order:
+ *   1. PYTHON_HOME_X64 / PYTHON_HOME_X86  (arch-specific, explicit path)
+ *   2. PYTHON_HOME                         (generic fallback)
+ *   3. Scan plugin dir                     (legacy / embedded layout)
+ *   4. PATH / system default               (python3.dll already on PATH)
+ *   5. Hard-coded common install paths
+ */
+static BOOL loadPython(void) {
+    char dllPath[MAX_PATH];
+
+    /* Add plugin dir to DLL search so .pyd extension modules there are found */
+    if (pluginDir[0] != '\0') {
+        wchar_t wPluginDir[MAX_PATH];
+        MultiByteToWideChar(CP_ACP, 0, pluginDir, -1, wPluginDir, MAX_PATH);
+        AddDllDirectory(wPluginDir);
+    }
+
+    /* Strategy 1: arch-specific env var (highest priority — no DLL copy needed)
+     *   PYTHON_HOME_X64  e.g. C:\Python314
+     *   PYTHON_HOME_X86  e.g. C:\Python312-32
+     * Set via .env / system environment before launching x64dbg.            */
+#ifdef _WIN64
+    const char* archEnvVar = "PYTHON_HOME_X64";
+#else
+    const char* archEnvVar = "PYTHON_HOME_X86";
+#endif
+    const char* archEnvPath = getenv(archEnvVar);
+    if (!hPython && archEnvPath && archEnvPath[0] != '\0') {
+        char msg[MAX_PATH + 64];
+        snprintf(msg, sizeof(msg), "loadPython: trying %s = %s", archEnvVar, archEnvPath);
+        debugFileLog(msg);
+        if (loadPythonFromDir(archEnvPath)) {
+            snprintf(msg, sizeof(msg), "loadPython: SUCCESS via %s", archEnvVar);
+            debugFileLog(msg);
+        }
+    }
+
+    /* Strategy 2: generic PYTHON_HOME fallback */
+    const char* envPath = getenv("PYTHON_HOME");
+    if (!hPython && envPath && envPath[0] != '\0') {
+        debugFileLog("loadPython: trying PYTHON_HOME");
+        loadPythonFromDir(envPath);
+    }
+
+    /* Strategy 3: scan plugin dir for any pythonXXX.dll (highest version first) */
     if (!hPython && pluginDir[0] != '\0') {
         WIN32_FIND_DATAA fd;
         HANDLE hFind;
@@ -192,38 +284,20 @@ static BOOL loadPython(void) {
         }
     }
 
-    /* Strategy 0b: python3.dll from plugin dir (stable ABI stub, last resort) */
-    if (!hPython && pluginDir[0] != '\0') {
-        snprintf(dllPath, MAX_PATH, "%s\\python3.dll", pluginDir);
-        hPython = LoadLibraryA(dllPath);
-        if (hPython) {
-            debugFileLog("loadPython: loaded python3.dll (stable ABI stub) from plugin dir");
-        }
-    }
-
-    /* Strategy 1: python3.dll from PATH or system */
+    /* Strategy 4: python3.dll from PATH / system (Python install dir on PATH) */
     if (!hPython) {
         hPython = LoadLibraryA("python3.dll");
         if (hPython) debugFileLog("loadPython: loaded python3.dll from PATH");
     }
 
-    /* Strategy 2: Check PYTHON_HOME environment variable */
-    if (!hPython) {
-        envPath = getenv("PYTHON_HOME");
-        if (envPath) {
-            snprintf(dllPath, MAX_PATH, "%s\\python3.dll", envPath);
-            hPython = LoadLibraryA(dllPath);
-            if (hPython) debugFileLog("loadPython: loaded from PYTHON_HOME");
-        }
-    }
-
-    /* Strategy 3: Check common Python install locations */
+    /* Strategy 5: hard-coded common install locations (last resort) */
     if (!hPython) {
         const char* locations[] = {
+            "C:\\Python314\\python314.dll",
+            "C:\\Python313\\python313.dll",
             "C:\\Python312\\python312.dll",
-            "C:\\Python312\\python3.dll",
-            "C:\\Python311\\python3.dll",
-            "C:\\Python310\\python3.dll",
+            "C:\\Python311\\python311.dll",
+            "C:\\Python310\\python310.dll",
             NULL
         };
         for (int i = 0; locations[i]; i++) {

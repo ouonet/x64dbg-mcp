@@ -96,6 +96,11 @@ def log_error(msg: str) -> None:
 
 _handlers: Dict[str, Callable[..., Any]] = {}
 
+# Serialize all handler dispatches — x64dbg commands are not thread-safe.
+# Multiple MCP clients connecting simultaneously would otherwise interleave
+# commands and corrupt register/state reads between step/continue calls.
+_dispatch_lock = threading.Lock()
+
 
 def handler(method: str):
     """Decorator to register a bridge request handler."""
@@ -198,6 +203,12 @@ def handle_debug_load(params: dict) -> dict:
         if sdk.DbgIsDebugging():
             break
         _time.sleep(0.1)
+
+    if not sdk.DbgIsDebugging():
+        raise RuntimeError(
+            f"InitDebug did not start a debug session within 15s. "
+            f"Check that the executable exists and is a valid PE: {exe}"
+        )
 
     if break_on_entry:
         _cmd("bpx entry")
@@ -413,7 +424,12 @@ def handle_debug_run_to(params: dict) -> dict:
     _wait_for_stop()
     rip = _eval_expr("cip")
     rip_hex = _hex(rip)
-    reached = rip_hex.lower() == str(addr).lower() or hex(rip).lower() == str(addr).lower()
+    def _norm(a: str) -> int:
+        try:
+            return int(str(a), 16)
+        except (ValueError, TypeError):
+            return -1
+    reached = _norm(rip_hex) == _norm(str(addr))
     reason = _infer_stop_reason(rip)
     return {"reached": reached, "stopAddress": rip_hex, "reason": reason}
 
@@ -559,7 +575,7 @@ def handle_memory_search(params: dict) -> dict:
     else:
         hex_pattern = pattern
 
-    _cmd(f'findall 0, "{hex_pattern}"')
+    _cmd(f"findall 0, {hex_pattern}")
     ref_count = _eval_expr("$result")
     matches: list[dict] = []
 
@@ -640,18 +656,29 @@ def handle_memory_map(params: dict) -> dict:
 
 
 def _protection_str(protect: int) -> str:
-    """Convert Windows MEMORY_BASIC_INFORMATION Protect flags to string."""
+    """Convert Windows MEMORY_BASIC_INFORMATION Protect flags to string.
+
+    The lower byte is an exclusive protection type (not a bitmask).
+    Modifier flags (PAGE_GUARD=0x100, PAGE_NOCACHE=0x200) are OR-ed in.
+    """
     if protect == 0:
         return ""
-    flags = ""
-    if protect & 0x01: flags += "P"  # PAGE_READONLY
-    if protect & 0x02: flags += "R"  # PAGE_READWRITE
-    if protect & 0x04: flags += "RW" # PAGE_WRITECOPY
-    if protect & 0x08: flags += "X"  # PAGE_EXECUTE
-    if protect & 0x10: flags += "XR" # PAGE_EXECUTE_READ
-    if protect & 0x20: flags += "XRW" # PAGE_EXECUTE_READWRITE
-    if protect & 0x40: flags += "XWC" # PAGE_EXECUTE_WRITECOPY
-    return flags if flags else f"0x{protect:X}"
+    _BASE = {
+        0x01: "---",  # PAGE_NOACCESS
+        0x02: "R",    # PAGE_READONLY
+        0x04: "RW",   # PAGE_READWRITE
+        0x08: "WC",   # PAGE_WRITECOPY
+        0x10: "X",    # PAGE_EXECUTE
+        0x20: "XR",   # PAGE_EXECUTE_READ
+        0x40: "XRW",  # PAGE_EXECUTE_READWRITE
+        0x80: "XWC",  # PAGE_EXECUTE_WRITECOPY
+    }
+    base = protect & 0xFF
+    result = _BASE.get(base, f"0x{base:02X}")
+    if protect & 0x100: result += "+G"   # PAGE_GUARD
+    if protect & 0x200: result += "+N"   # PAGE_NOCACHE
+    if protect & 0x400: result += "+WC"  # PAGE_WRITECOMBINE
+    return result
 
 
 def _memtype_str(memtype: int) -> str:
@@ -714,7 +741,8 @@ def handle_registers_set(params: dict) -> dict:
 @handler("stack.getCallStack")
 def handle_get_callstack(params: dict) -> dict:
     _require_x64dbg()
-    stack = sdk.get_callstack()
+    max_frames = params.get("maxFrames", 50)
+    stack = sdk.get_callstack()[:max_frames]  # truncate before symbol lookups
     frames = []
     for i, frame in enumerate(stack):
         frames.append({
@@ -724,8 +752,7 @@ def handle_get_callstack(params: dict) -> dict:
             "module": sdk.get_module_at(frame["address"]),
             "function": sdk.get_label_at(frame["address"]),
         })
-    max_frames = params.get("maxFrames", 50)
-    return {"threadId": _eval_expr("$tid"), "frames": frames[:max_frames]}
+    return {"threadId": _eval_expr("$tid"), "frames": frames}
 
 
 @handler("threads.list")
@@ -1038,7 +1065,7 @@ def handle_get_imports(params: dict) -> dict:
                         "module":   dll_name,
                         "function": func_name,
                         "ordinal":  ordinal_n,
-                        "address":  None,
+                        "address":  "",
                     })
                 t += 1
         idx += 1
@@ -1556,12 +1583,14 @@ def handle_detect_anti_debug(params: dict) -> dict:
                 "bypass": info["bypass"],
             })
 
-    # Check for TLS callbacks
+    # Check for TLS callbacks via .tls section presence in PE header
     tls_callbacks: list[str] = []
     try:
-        tls_dir = _eval_expr("mod.main() + pe.tls.va")
-        if tls_dir:
-            tls_callbacks.append(_hex(tls_dir))
+        pe = handle_get_pe_header(params)
+        for sec in pe.get("sections", []):
+            if sec.get("name", "").lower().strip("\x00") == ".tls":
+                tls_callbacks.append(sec["virtualAddress"])
+                break
     except Exception:
         pass
 
@@ -1752,11 +1781,13 @@ class BridgeServer:
         if not handler_fn:
             return {"id": req_id, "success": False, "error": f"Unknown method: {method}"}
 
-        # Trace log for crash diagnosis
+        # Trace log for crash diagnosis (capped at 1 MB to prevent unbounded growth)
         import time as _ttime
         _trace_file = os.path.join(_plugin_dir, "mcp_dispatch_trace.log")
         def _tr(msg: str):
             try:
+                if os.path.exists(_trace_file) and os.path.getsize(_trace_file) > 1_000_000:
+                    return
                 with open(_trace_file, "a", encoding="utf-8") as _tf:
                     _tf.write(f"{_ttime.strftime('%H:%M:%S')} {msg}\n")
                     _tf.flush()
@@ -1764,14 +1795,15 @@ class BridgeServer:
                 pass
         _tr(f"dispatch: {method}")
 
-        try:
-            result = handler_fn(params)
-            _tr(f"dispatch OK: {method}")
-            return {"id": req_id, "success": True, "data": result}
-        except Exception as e:
-            _tr(f"dispatch EXCEPTION: {method}: {e}")
-            log_error(f"Handler {method} failed: {traceback.format_exc()}")
-            return {"id": req_id, "success": False, "error": str(e)}
+        with _dispatch_lock:
+            try:
+                result = handler_fn(params)
+                _tr(f"dispatch OK: {method}")
+                return {"id": req_id, "success": True, "data": result}
+            except Exception as e:
+                _tr(f"dispatch EXCEPTION: {method}: {e}")
+                log_error(f"Handler {method} failed: {traceback.format_exc()}")
+                return {"id": req_id, "success": False, "error": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

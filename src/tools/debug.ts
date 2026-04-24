@@ -8,7 +8,7 @@ import { z } from "zod";
 import { bridge } from "../bridge.js";
 import { sessions } from "../session.js";
 import { logger } from "../logger.js";
-import { detectPEArchitecture, killDebugger } from "../launcher.js";
+import { killDebugger } from "../launcher.js";
 import type { Breakpoint, BreakpointType } from "../types.js";
 
 /** States in which step/continue operations make sense. */
@@ -398,6 +398,8 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId, address, type, condition, logText, name }) => {
       try {
+        sessions.get(sessionId);
+
         const result = await bridge.call<{
           address: string;
           resolved: boolean;
@@ -675,6 +677,13 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ force }) => {
       const lines: string[] = [];
+
+      // Terminate all tracked sessions so their state stays consistent
+      for (const s of sessions.list()) {
+        sessions.terminate(s.id);
+      }
+      bridge.disconnect();
+      lines.push("Terminated active sessions and disconnected bridge.");
 
       // Try graceful kill of process we launched
       killDebugger();

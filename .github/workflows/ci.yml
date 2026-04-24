@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ── TypeScript build + test + lint ────────────────────────────────────────
+  ts:
+    name: TypeScript (Node ${{ matrix.node }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  # ── Python syntax + logic tests ───────────────────────────────────────────
+  python:
+    name: Python bridge
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check
+        run: |
+          python -m py_compile plugin/x64dbg_mcp_bridge.py
+          python -m py_compile plugin/x64dbg_bridge_sdk.py
+
+      - name: Logic tests
+        run: python plugin/test_bridge.py
+
+  # ── C loader build (both architectures) ──────────────────────────────────
+  loader:
+    name: C loader
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure x64
+        run: cmake -B plugin/loader/build64 -A x64 -S plugin/loader
+
+      - name: Build x64
+        run: cmake --build plugin/loader/build64 --config Release
+
+      - name: Configure x32
+        run: cmake -B plugin/loader/build32 -A Win32 -S plugin/loader -DBUILD_32BIT=ON
+
+      - name: Build x32
+        run: cmake --build plugin/loader/build32 --config Release
+
+      - name: Copy to prebuilt/
+        run: |
+          New-Item -ItemType Directory -Force -Path plugin/loader/prebuilt
+          Copy-Item plugin/loader/build64/Release/x64dbg_mcp_loader.dp64 plugin/loader/prebuilt/
+          Copy-Item plugin/loader/build32/Release/x64dbg_mcp_loader.dp32 plugin/loader/prebuilt/
+
+      - name: Upload prebuilt artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-loaders
+          path: plugin/loader/prebuilt/
+          if-no-files-found: error
+
+  # ── Release: publish to npm with prebuilt binaries ────────────────────────
+  release:
+    name: Publish to npm
+    runs-on: windows-latest
+    needs: [ts, python, loader]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Download prebuilt loaders
+        uses: actions/download-artifact@v4
+        with:
+          name: prebuilt-loaders
+          path: plugin/loader/prebuilt/
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

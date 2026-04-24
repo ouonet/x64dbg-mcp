@@ -185,19 +185,32 @@ export function registerSecurityTools(server: McpServer): void {
           }
         }
 
-        // Calculate risk level
-        const categoryCount = Object.keys(findings).length;
+        // Risk level: weight high-signal categories more than noisy ones.
+        // file_system / registry / process_manipulation are common in normal software.
+        const HIGH_SIGNAL = new Set([
+          "process_injection", "hooking", "privilege_escalation", "anti_debug",
+        ]);
+        const highSignalCategories = Object.keys(findings).filter((c) => HIGH_SIGNAL.has(c));
+        const allCategories = Object.keys(findings);
+
         let riskLevel: string;
-        if (categoryCount === 0) riskLevel = "low";
-        else if (categoryCount <= 2 && suspiciousCount <= 5) riskLevel = "medium";
-        else if (categoryCount <= 4) riskLevel = "high";
-        else riskLevel = "critical";
+        if (allCategories.length === 0) {
+          riskLevel = "low";
+        } else if (highSignalCategories.length === 0 && allCategories.length <= 3) {
+          riskLevel = "medium";
+        } else if (highSignalCategories.length <= 1 && allCategories.length <= 5) {
+          riskLevel = "medium";
+        } else if (highSignalCategories.length <= 2) {
+          riskLevel = "high";
+        } else {
+          riskLevel = "critical";
+        }
 
         const response: Record<string, unknown> = {
           module: module ?? "(main)",
           totalImports: imports.imports.length,
           suspiciousCount,
-          categoriesMatched: categoryCount,
+          categoriesMatched: allCategories.length,
           riskLevel,
           findings,
         };
@@ -351,7 +364,7 @@ export function registerSecurityTools(server: McpServer): void {
           suspiciousApis: { suspiciousCount, findings },
           antiDebug,
           sectionAnomalies,
-          totalImports: importsResult.imports.length,
+          totalImports: importsResult.imports?.length ?? 0,
         };
 
         return {

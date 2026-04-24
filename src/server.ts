@@ -55,7 +55,16 @@ async function main(): Promise<void> {
   });
 
   bridge.on("disconnected", () => {
-    logger.error("Bridge disconnected and reconnect attempts exhausted");
+    logger.error(
+      "Bridge disconnected — all reconnect attempts exhausted. " +
+      "Restart x64dbg and run the MCP server again."
+    );
+    // Terminate every active session so subsequent tool calls fail fast
+    // (clear error) instead of hanging for REQUEST_TIMEOUT_MS (30 s).
+    for (const s of sessions.list()) {
+      logger.warn(`Terminating session ${s.id} (${s.executable}) — bridge gone`);
+      sessions.terminate(s.id);
+    }
   });
 
   bridge.on("reconnected", () => {
@@ -84,6 +93,8 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  // On Windows SIGTERM is unreliable; detect MCP host closing the pipe instead.
+  process.stdin.on("close", shutdown);
 }
 
 main().catch((err) => {

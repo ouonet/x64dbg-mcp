@@ -111,6 +111,7 @@ export class BridgeClient extends EventEmitter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.reconnectAttempts = 0;
     this.rejectAllPending("Bridge disconnecting");
     this.cleanup();
     logger.info("Bridge disconnected");
@@ -181,7 +182,7 @@ export class BridgeClient extends EventEmitter {
         } else if (msg.id) {
           this.handleResponse(msg as BridgeResponse);
         }
-      } catch (err) {
+      } catch {
         logger.warn(`Bridge received malformed JSON: ${line}`);
       }
     }
@@ -204,7 +205,7 @@ export class BridgeClient extends EventEmitter {
   }
 
   private rejectAllPending(reason: string): void {
-    for (const [id, entry] of this.pending) {
+    for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(new Error(reason));
     }
@@ -223,7 +224,7 @@ export class BridgeClient extends EventEmitter {
       logger.info(`Bridge not connected, attempting reconnect before ${method}`);
       try {
         await this.connect();
-      } catch (err) {
+      } catch {
         throw new Error("Bridge is not connected");
       }
     }

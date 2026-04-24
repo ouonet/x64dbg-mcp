@@ -7,7 +7,7 @@ import { z } from "zod";
 import { bridge } from "../bridge.js";
 import { sessions } from "../session.js";
 import { config } from "../config.js";
-import type { Registers, StackFrame, ThreadInfo, MemoryRegion } from "../types.js";
+import type { StackFrame, ThreadInfo, MemoryRegion } from "../types.js";
 
 export function registerMemoryTools(server: McpServer): void {
   // ── Read memory ───────────────────────────────────────────────────────
