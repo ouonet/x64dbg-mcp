@@ -1,0 +1,44 @@
+{
+  "name": "x64dbg-mcp",
+  "version": "1.0.0",
+  "description": "Production-level Model Context Protocol server for x64dbg reverse engineering and debugging",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "x64dbg-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "inspector": "npx @modelcontextprotocol/inspector node dist/server.js",
+    "test": "npx tsx --test test/basic.test.ts",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "mcp",
+    "x64dbg",
+    "debugger",
+    "reverse-engineering",
+    "binary-analysis",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "dotenv": "^16.5.0",
+    "winston": "^3.17.0",
+    "zod": "^3.25.36"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.15",
+    "eslint": "^9.0.0",
+    "rimraf": "^6.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
