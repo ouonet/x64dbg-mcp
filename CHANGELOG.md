@@ -20,6 +20,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entire `scripts/` directory; `ci.mjs` is excluded from the published package.
 - `install-plugin` npm script now delegates to `scripts/install-plugin.mjs`; on
   non-Windows platforms the script exits cleanly with a notice instead of failing.
+- README tool count corrected from 36 to 39; `get_status`, `close_debugger`, and
+  `collect_bp_args` were missing from the Core Debugging section.
 
 ---
 
