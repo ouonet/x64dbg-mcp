@@ -86,6 +86,8 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     logger.info("Shutting down …");
     sessions.stop();
+    // Drain in-flight bridge requests before closing the socket.
+    await bridge.drain(5_000);
     bridge.disconnect();
     killDebugger();
     process.exit(0);

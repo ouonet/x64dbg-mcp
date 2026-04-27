@@ -266,11 +266,14 @@ export interface SuspiciousApiEntry {
 
 // ─── Bridge Protocol ────────────────────────────────────────────────────────
 
+export const BRIDGE_PROTOCOL_VERSION = "1" as const;
+
 export interface BridgeRequest {
   id: string;
   method: string;
   params: Record<string, unknown>;
   authToken?: string;
+  protocolVersion: typeof BRIDGE_PROTOCOL_VERSION;
 }
 
 export interface BridgeResponse {
@@ -295,7 +298,6 @@ export interface ServerConfig {
   bridgePort: number;
   bridgeAuthToken: string;
   logLevel: "error" | "warn" | "info" | "debug";
-  maxSessions: number;
   sessionTimeoutMs: number;
   maxDisasmInstructions: number;
   maxTraceInstructions: number;

@@ -34,7 +34,7 @@ export class SessionManager {
   // ── CRUD ────────────────────────────────────────────────────────────────
 
   create(executable: string, architecture: "x86" | "x64", pid: number): Session {
-    if (this.sessions.size >= config.maxSessions) {
+    if (this.sessions.size >= 1) {
       throw new McpError(
         ErrorCode.E_SESSION_LIMIT,
         "Only one active debugging session is supported. Terminate the current session before loading a new executable."
@@ -64,12 +64,23 @@ export class SessionManager {
    * Look up a session by ID.
    * NOTE: intentionally updates lastActivity so that sessions actively in use
    * are not reaped by the GC. If you need a read-only lookup without touching
-   * the timer, access this.sessions.get(id) directly.
+   * the timer, use peek().
    */
   get(id: string): Session {
     const s = this.sessions.get(id);
     if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);
     s.lastActivity = Date.now();
+    return s;
+  }
+
+  /**
+   * Look up a session by ID without updating lastActivity.
+   * Use this for read-only operations (e.g. get_status) where touching the
+   * idle timer is undesirable.
+   */
+  peek(id: string): Session {
+    const s = this.sessions.get(id);
+    if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);
     return s;
   }
 

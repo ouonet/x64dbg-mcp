@@ -16,6 +16,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { launchDebugger } from "./launcher.js";
 import type { BridgeRequest, BridgeResponse, BridgeEvent } from "./types.js";
+import { BRIDGE_PROTOCOL_VERSION } from "./types.js";
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -212,6 +213,27 @@ export class BridgeClient extends EventEmitter {
     this.pending.clear();
   }
 
+  /**
+   * Wait for all in-flight requests to settle or until the timeout expires.
+   * Call this before disconnect() during graceful shutdown to avoid rejecting
+   * requests that are still being processed by the bridge.
+   */
+  async drain(timeoutMs = 5_000): Promise<void> {
+    if (this.pending.size === 0) return;
+    return new Promise<void>((resolve) => {
+      const deadline = setTimeout(resolve, timeoutMs);
+      const check = (): void => {
+        if (this.pending.size === 0) {
+          clearTimeout(deadline);
+          resolve();
+        } else {
+          setTimeout(check, 50);
+        }
+      };
+      setTimeout(check, 50);
+    });
+  }
+
   // ── Public request API ──────────────────────────────────────────────────
 
   async request(
@@ -230,7 +252,7 @@ export class BridgeClient extends EventEmitter {
     }
 
     const id = crypto.randomUUID();
-    const req: BridgeRequest = { id, method, params };
+    const req: BridgeRequest = { id, method, params, protocolVersion: BRIDGE_PROTOCOL_VERSION };
     if (config.bridgeAuthToken) {
       req.authToken = config.bridgeAuthToken;
     }
@@ -289,10 +311,9 @@ export class BridgeClient extends EventEmitter {
    * @returns The detected architecture.
    */
   async launchAndConnect(
-    targetExe: string,
-    cmdLineArgs?: string
+    targetExe: string
   ): Promise<"x86" | "x64"> {
-    const arch = await launchDebugger(targetExe, cmdLineArgs);
+    const arch = await launchDebugger(targetExe);
     // Connect to the bridge now that the debugger is running
     await this.connect();
     return arch;

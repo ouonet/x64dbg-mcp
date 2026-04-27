@@ -160,8 +160,7 @@ async function waitForBridge(
  * @returns The detected architecture.
  */
 export async function launchDebugger(
-  targetExe: string,
-  _cmdLineArgs?: string
+  targetExe: string
 ): Promise<"x86" | "x64"> {
   if (!fs.existsSync(targetExe)) {
     throw new Error(`Target executable not found: ${targetExe}`);

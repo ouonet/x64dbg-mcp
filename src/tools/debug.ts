@@ -91,10 +91,7 @@ export function registerDebugTools(server: McpServer): void {
         let detectedArch: "x86" | "x64" | null = null;
         if (!bridge.isConnected) {
           logger.info("Bridge not connected, auto-launching debugger...");
-          detectedArch = await bridge.launchAndConnect(
-            executablePath,
-            commandLineArgs
-          );
+          detectedArch = await bridge.launchAndConnect(executablePath);
           logger.info(`Debugger launched (${detectedArch}), bridge connected`);
         }
 

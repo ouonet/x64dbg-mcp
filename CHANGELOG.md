@@ -41,6 +41,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `test_mcp_e2e.py` as runnable commands (require live bridge + compiled server) (#11).
 - Unit test suite extended from 27 to 37 tests: mock TCP server protocol tests,
   `ErrorCode`/`McpError` invariants, and `logToolCall` smoke tests (#10).
+- `MAX_SESSIONS` environment variable removed; the session limit is now hardcoded to 1
+  and no longer configurable (the bridge supports exactly one active session) (#1).
+- `SessionManager.peek(id)` added: read-only session lookup that does not update
+  `lastActivity`, for use by status-only operations (#22).
+- `BridgeRequest` now includes a `protocolVersion: "1"` field on every request to
+  allow the bridge plugin to detect incompatible clients in future versions (#17).
+- `BridgeClient.drain(timeoutMs?)` added: waits for all in-flight requests to settle
+  before closing the socket during graceful shutdown (#3).
+- Graceful shutdown in `server.ts` now calls `bridge.drain()` before `disconnect()`,
+  preventing in-flight requests from being rejected on SIGINT/SIGTERM/pipe-close (#3).
+- `wrapTool(method, fn)` higher-order function exported from `src/tools/index.ts`:
+  wraps any tool handler with automatic error catch + `logToolCall` instrumentation (#16).
+- `launchDebugger` and `launchAndConnect` no longer accept a `cmdLineArgs` parameter —
+  command-line arguments are passed via `debug.load` after the bridge is ready (#5).
 
 ---
 

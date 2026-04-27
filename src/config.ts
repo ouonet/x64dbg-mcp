@@ -10,7 +10,6 @@ import type { ServerConfig } from "./types.js";
 
 dotenv.config();
 
-const MAX_SUPPORTED_SESSIONS = 1;
 const BRIDGE_AUTH_TOKEN_FILE = "x64dbg_mcp_bridge.token";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -91,8 +90,6 @@ export function loadConfig(): ServerConfig {
     bridgePort: parseEnvInt(process.env.BRIDGE_PORT, 27042),
     bridgeAuthToken,
     logLevel: (process.env.LOG_LEVEL as ServerConfig["logLevel"]) || "info",
-    // The current bridge/debugger architecture supports only one active session.
-    maxSessions: Math.min(parseEnvInt(process.env.MAX_SESSIONS, MAX_SUPPORTED_SESSIONS), MAX_SUPPORTED_SESSIONS),
     sessionTimeoutMs: parseEnvInt(process.env.SESSION_TIMEOUT_MS, 3_600_000),
     maxDisasmInstructions: parseEnvInt(process.env.MAX_DISASM_INSTRUCTIONS, 500),
     maxTraceInstructions: parseEnvInt(process.env.MAX_TRACE_INSTRUCTIONS, 10_000),
