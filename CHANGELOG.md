@@ -16,6 +16,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `plugin/loader/prebuilt/` added to `.gitignore`; compiled `.dp32`/`.dp64` artifacts
   are no longer tracked in git and will be produced by CI as release artifacts.
+- `package.json` `files` list is now explicit (individual scripts) instead of the
+  entire `scripts/` directory; `ci.mjs` is excluded from the published package.
+- `install-plugin` npm script now delegates to `scripts/install-plugin.mjs`; on
+  non-Windows platforms the script exits cleanly with a notice instead of failing.
 
 ---
 
