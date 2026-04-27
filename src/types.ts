@@ -265,6 +265,22 @@ export interface SuspiciousApiEntry {
 }
 
 // ─── Bridge Protocol ────────────────────────────────────────────────────────
+//
+// Field naming convention across the TS ↔ Python boundary:
+//   TypeScript uses camelCase  (e.g. breakOnEntry, entryPoint, hitCount)
+//   Python uses snake_case     (e.g. break_on_entry, entry_point, hit_count)
+//
+// The Python bridge converts outgoing dict keys to camelCase before sending
+// and converts incoming JSON keys from camelCase to snake_case internally.
+// When adding new fields, update both sides and keep this mapping in sync.
+// Key mappings in use (TS camelCase → Python snake_case):
+//   breakOnEntry      → break_on_entry
+//   entryPoint        → entry_point
+//   hitCount          → hit_count
+//   logText           → log_text
+//   sessionId         → session_id
+//   moduleBase        → module_base
+//   protocolVersion   → protocol_version (checked server-side only)
 
 export const BRIDGE_PROTOCOL_VERSION = "1" as const;
 

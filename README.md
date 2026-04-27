@@ -6,10 +6,10 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 ```
 ┌─────────────────┐  STDIO/JSON-RPC   ┌──────────────────┐  TCP (JSON)  ┌──────────────┐
-│  AI Assistant    │ ◄───────────────► │  MCP Server      │ ◄──────────► │  x64dbg      │
-│  (Claude, etc.)  │                   │  (Node.js / TS)  │   port 27042 │  + Bridge    │
-└─────────────────┘                    └──────────────────┘              │    Plugin    │
-                                                                         └──────────────┘
+│  AI Assistant   │ ◄───────────────► │  MCP Server      │ ◄──────────► │  x64dbg      │
+│  (Claude, etc.) │                   │  (Node.js / TS)  │  port 27042  │  + Bridge    │
+└─────────────────┘                   └──────────────────┘              │    Plugin    │
+                                                                        └──────────────┘
 ```
 
 **Two components:**
@@ -20,11 +20,13 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 ## Features
 
 ### Auto-Launch & PE Detection
+
 - Automatically detects PE architecture (x86 / x64) by reading the PE header
 - Launches the correct debugger variant (`x32dbg` or `x64dbg`) with the target executable
 - Waits for the bridge plugin TCP port to become reachable, then connects — **zero manual setup**
 
 ### Core Debugging (15 tools)
+
 - `load_executable` — Load PE file, **auto-detect x86/x64, auto-launch debugger**, break on entry
 - `continue_execution` / `step_into` / `step_over` / `step_out`
 - `run_to_address` — Run until a specific address
@@ -37,6 +39,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - `execute_command` — Run any raw x64dbg command
 
 ### Memory & Registers (9 tools)
+
 - `read_memory` / `write_memory` / `search_memory` — Hex patterns with wildcards, ASCII/Unicode text
 - `get_memory_map` — Full virtual memory layout with protection and module info
 - `get_registers` / `set_register` — GP, flags, segment, debug, FPU/SSE registers
@@ -44,6 +47,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - `get_threads` / `switch_thread` — Thread enumeration and context switching
 
 ### Static & Dynamic Analysis (10 tools)
+
 - `disassemble` — With metadata (is_call, is_jump, reference targets, comments)
 - `analyze_function` — Boundaries, size, call graph (callers + callees), leaf detection
 - `get_cross_references` — Code and data xrefs (to/from/both)
@@ -54,6 +58,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - `trace_execution` — Record instruction trace with optional register snapshots
 
 ### Security Analysis (5 tools)
+
 - `detect_packing` — Entropy analysis, known packer signatures, import count heuristics, confidence scoring
 - `analyze_suspicious_apis` — Cross-reference imports against 100+ malware-associated APIs in 10 categories
 - `detect_anti_debug` — IsDebuggerPresent, timing checks, PEB flags, TLS callbacks, int 2D/3, with bypass suggestions
@@ -81,13 +86,13 @@ npm install -g x64dbg-mcp
 
 `postinstall` runs automatically and handles:
 
-| Step | What happens |
-|------|-------------|
-| x64dbg | Downloads latest snapshot from GitHub if not found locally |
-| Plugin files | Deploys `.dp64` / `.dp32` loader + Python bridge to x64dbg plugins/ |
-| Bridge auth | Generates a random `BRIDGE_AUTH_TOKEN` and writes `x64dbg_mcp_bridge.token` to plugins/ |
-| Python | Detects Python install dir, sets `PYTHON_HOME_X64` / `PYTHON_HOME_X86` |
-| `.env` | Creates with all detected settings and defaults |
+| Step         | What happens                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| x64dbg       | Downloads latest snapshot from GitHub if not found locally                                  |
+| Plugin files | Deploys `.dp64` / `.dp32` loader + Python bridge to x64dbg plugins/                     |
+| Bridge auth  | Generates a random `BRIDGE_AUTH_TOKEN` and writes `x64dbg_mcp_bridge.token` to plugins/ |
+| Python       | Detects Python install dir, sets `PYTHON_HOME_X64` / `PYTHON_HOME_X86`                  |
+| `.env`     | Creates with all detected settings and defaults                                             |
 
 After install, only two manual steps remain:
 
@@ -158,16 +163,16 @@ MAX_SESSIONS=1
 SESSION_TIMEOUT_MS=3600000
 ```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `X64DBG_PATH` | auto-detected | x64dbg installation directory |
-| `PYTHON_HOME_X64` | *(auto-detected)* | Python 64-bit dir — loader Priority 1; no DLL copy needed |
-| `PYTHON_HOME_X86` | *(auto-detected)* | Python 32-bit dir — used by `.dp32` loader |
-| `BRIDGE_PORT` | `27042` | TCP port the Python bridge listens on |
-| `BRIDGE_AUTH_TOKEN` | auto-generated | Shared secret for localhost MCP ↔ bridge requests |
-| `LOG_LEVEL` | `info` | `error` / `warn` / `info` / `debug` |
-| `MAX_SESSIONS` | `1` | Single-session limit for the current x64dbg bridge architecture |
-| `SESSION_TIMEOUT_MS` | `3600000` | Session idle timeout (ms) |
+| Variable               | Default             | Description                                                     |
+| ---------------------- | ------------------- | --------------------------------------------------------------- |
+| `X64DBG_PATH`        | auto-detected       | x64dbg installation directory                                   |
+| `PYTHON_HOME_X64`    | *(auto-detected)* | Python 64-bit dir — loader Priority 1; no DLL copy needed      |
+| `PYTHON_HOME_X86`    | *(auto-detected)* | Python 32-bit dir — used by `.dp32` loader                   |
+| `BRIDGE_PORT`        | `27042`           | TCP port the Python bridge listens on                           |
+| `BRIDGE_AUTH_TOKEN`  | auto-generated      | Shared secret for localhost MCP ↔ bridge requests              |
+| `LOG_LEVEL`          | `info`            | `error` / `warn` / `info` / `debug`                     |
+| `MAX_SESSIONS`       | `1`               | Single-session limit for the current x64dbg bridge architecture |
+| `SESSION_TIMEOUT_MS` | `3600000`         | Session idle timeout (ms)                                       |
 
 The recommended path is to let the MCP server auto-launch x64dbg. If you manually start x64dbg,
 keep the deployed `x64dbg_mcp_bridge.token` file in the plugins directory so the bridge can enforce
@@ -216,6 +221,7 @@ Ask your AI assistant:
 > "Load C:\samples\target.exe and analyze it for suspicious behavior"
 
 The AI will use the MCP tools to:
+
 1. `load_executable` → load the binary
 2. `generate_security_report` → run all security checks
 3. `disassemble` → inspect suspicious code
@@ -224,6 +230,7 @@ The AI will use the MCP tools to:
 ## Example Workflows
 
 ### Crash Analysis
+
 ```
 User: "My program crashes at startup, help me debug it"
 AI:   load_executable → continue_execution → get_call_stack →
@@ -231,6 +238,7 @@ AI:   load_executable → continue_execution → get_call_stack →
 ```
 
 ### Malware Triage
+
 ```
 User: "Analyze this suspicious binary"
 AI:   load_executable → generate_security_report →
@@ -239,6 +247,7 @@ AI:   load_executable → generate_security_report →
 ```
 
 ### Reverse Engineering
+
 ```
 User: "Find the license check function"
 AI:   load_executable → find_strings (filter: "license") →
@@ -263,6 +272,10 @@ npm run inspector                 # Launch MCP Inspector UI
 npm run clean                     # Remove dist/
 ```
 
+> **MCP Inspector note**: `npm run inspector` downloads `@modelcontextprotocol/inspector`
+> via `npx` on first run. In restricted network environments set `HTTP_PROXY` / `HTTPS_PROXY`
+> before running, or install it globally first: `npm install -g @modelcontextprotocol/inspector`.
+
 `npm run dev` automatically syncs Python source files to the bundled x64dbg via the `predev`
 hook before starting the server — no manual copy needed during development.
 
@@ -280,6 +293,7 @@ npm run doctor
 ```
 
 CI (`.github/workflows/ci.yml`) runs all three jobs on every push:
+
 - `ts`: build + lint + test on Node 20 and 22
 - `python`: syntax check + logic tests on Python 3.11
 - `loader`: CMake build (x64 + x32), artifacts saved to `plugin/loader/prebuilt/`

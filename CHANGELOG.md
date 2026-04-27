@@ -79,6 +79,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   truly closes before `killDebugger()` is called (#28).
 - `BridgeClient` `MAX_BUFFER_BYTES` increased from 4 MB to 16 MB to accommodate large
   trace / memory-search responses without triggering buffer-overflow disconnects (#8).
+- `detectPEArchitecture` now recognises ARM64 (`0xAA64`) and ARM Thumb-2 (`0x01C4`)
+  machine types and throws a descriptive error explaining that x64dbg only supports
+  x86/x64, replacing the generic "Unsupported PE machine type" message (#7).
+- `src/types.ts` Bridge Protocol section documents the camelCase ↔ snake_case field
+  naming convention and lists all current cross-boundary field mappings (#18).
+- README Development section now includes an MCP Inspector note about proxy/offline
+  setup requirements (#19).
 
 ---
 

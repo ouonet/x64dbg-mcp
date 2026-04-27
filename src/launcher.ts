@@ -16,9 +16,11 @@ import { logger } from "./logger.js";
 const BRIDGE_POLL_INTERVAL_MS = 500;
 const BRIDGE_POLL_TIMEOUT_MS = 30_000;
 
-/** PE machine types */
-const IMAGE_FILE_MACHINE_I386 = 0x014c;
-const IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+/** PE machine types (COFF header Machine field) */
+const IMAGE_FILE_MACHINE_I386  = 0x014c; // x86
+const IMAGE_FILE_MACHINE_AMD64 = 0x8664; // x64
+const IMAGE_FILE_MACHINE_ARM64 = 0xaa64; // ARM64 — not supported by x64dbg
+const IMAGE_FILE_MACHINE_ARMNT = 0x01c4; // ARM Thumb-2 — not supported by x64dbg
 
 let debuggerProcess: ChildProcess | null = null;
 
@@ -56,6 +58,12 @@ export function detectPEArchitecture(
         return "x86";
       case IMAGE_FILE_MACHINE_AMD64:
         return "x64";
+      case IMAGE_FILE_MACHINE_ARM64:
+      case IMAGE_FILE_MACHINE_ARMNT:
+        throw new Error(
+          `ARM PE detected (machine 0x${machine.toString(16)}): x64dbg only supports ` +
+          `x86 and x64 targets. For ARM64 on Windows 11, use a native ARM64 debugger.`
+        );
       default:
         throw new Error(
           `Unsupported PE machine type 0x${machine.toString(16)}: ${exePath}`
