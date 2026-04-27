@@ -32,6 +32,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   32-bit, fixing silent pointer truncation when running under x64dbg.
 - `postinstall.mjs` now prints explicit `X64DBG_PATH` instructions when the x64dbg
   download fails, instead of a bare warning with no recovery guidance (#29).
+- `src/errors.ts` introduces `ErrorCode` enum and `McpError` class for structured,
+  typed error propagation across the MCP server (#26). `SessionManager` uses `McpError`
+  for session-limit and not-found errors (#10).
+- `logToolCall(method, sessionId, durationMs, error?)` helper added to `src/logger.ts`
+  for consistent structured per-call observability (#25).
+- `test:e2e` and `test:e2e:py` npm scripts expose `test_mcp_client.mjs` and
+  `test_mcp_e2e.py` as runnable commands (require live bridge + compiled server) (#11).
+- Unit test suite extended from 27 to 37 tests: mock TCP server protocol tests,
+  `ErrorCode`/`McpError` invariants, and `logToolCall` smoke tests (#10).
 
 ---
 
