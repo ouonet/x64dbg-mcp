@@ -25,6 +25,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `BRIDGE_AUTH_TOKEN` is now mandatory. The MCP server refuses to start if the token
   is not set; the Python bridge now rejects all connections when no token is configured
   (previously an empty token disabled auth entirely). `.env.example` updated accordingly.
+- C loader plugin (`x64dbg_mcp_loader.c`) Strategy 4 now uses `LoadLibraryExA` with
+  `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` instead of a bare `LoadLibraryA("python3.dll")`
+  call, eliminating the current-directory DLL planting risk.
 
 ---
 

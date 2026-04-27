@@ -284,9 +284,13 @@ static BOOL loadPython(void) {
         }
     }
 
-    /* Strategy 4: python3.dll from PATH / system (Python install dir on PATH) */
+    /* Strategy 4: python3.dll from PATH / system (Python install dir on PATH).
+     * Use LOAD_LIBRARY_SEARCH_DEFAULT_DIRS to restrict the search to
+     * System32, the application directory, and any paths added via
+     * AddDllDirectory() above.  This avoids the current-directory DLL
+     * planting risk that a plain LoadLibraryA("python3.dll") would have.    */
     if (!hPython) {
-        hPython = LoadLibraryA("python3.dll");
+        hPython = LoadLibraryExA("python3.dll", NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if (hPython) debugFileLog("loadPython: loaded python3.dll from PATH");
     }
 
