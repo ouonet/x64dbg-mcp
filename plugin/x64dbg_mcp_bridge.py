@@ -350,8 +350,13 @@ def handle_collect_bp_args(params: dict) -> dict:
     errors:    list[str] = []
 
     def _read_ptr_at(addr: int) -> int:
-        raw = sdk.read_memory(addr, 4)
-        return _s.unpack_from("<I", raw)[0]
+        # Pointer width matches the *debugger* bitness (x64dbg → 8 bytes, x32dbg → 4 bytes)
+        if sys.maxsize > 2**32:
+            raw = sdk.read_memory(addr, 8)
+            return _s.unpack_from("<Q", raw)[0]
+        else:
+            raw = sdk.read_memory(addr, 4)
+            return _s.unpack_from("<I", raw)[0]
 
     def _read_wstr(ptr: int, max_chars: int = 260) -> str:
         raw = sdk.read_memory(ptr, max_chars * 2)
