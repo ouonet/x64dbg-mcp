@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { bridge } from "./bridge.js";
+import { ErrorCode, McpError } from "./errors.js";
 import type { Session, DebugState, Breakpoint, ModuleInfo } from "./types.js";
 
 export class SessionManager {
@@ -34,7 +35,8 @@ export class SessionManager {
 
   create(executable: string, architecture: "x86" | "x64", pid: number): Session {
     if (this.sessions.size >= config.maxSessions) {
-      throw new Error(
+      throw new McpError(
+        ErrorCode.E_SESSION_LIMIT,
         "Only one active debugging session is supported. Terminate the current session before loading a new executable."
       );
     }
@@ -66,7 +68,7 @@ export class SessionManager {
    */
   get(id: string): Session {
     const s = this.sessions.get(id);
-    if (!s) throw new Error(`Session not found: ${id}`);
+    if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);
     s.lastActivity = Date.now();
     return s;
   }
