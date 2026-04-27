@@ -19,19 +19,28 @@
     "clean": "rimraf dist",
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
-    "install-plugin": "pwsh -NonInteractive -File scripts/install-plugin.ps1",
+    "install-plugin": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/install-plugin.ps1",
     "setup-x64dbg": "node scripts/setup-x64dbg.mjs",
     "ci": "node scripts/ci.mjs",
+    "prepack": "node scripts/prepack.mjs",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "files": [
     "dist/",
-    "scripts/",
+    "scripts/postinstall.mjs",
+    "scripts/prepack.mjs",
+    "scripts/bridge-auth.mjs",
+    "scripts/setup-x64dbg.mjs",
+    "scripts/setup.mjs",
+    "scripts/sync-plugin.mjs",
+    "scripts/doctor.mjs",
+    "scripts/install-plugin.ps1",
     "plugin/x64dbg_mcp_bridge.py",
     "plugin/x64dbg_bridge_sdk.py",
     "plugin/loader/prebuilt/",
     ".env.example",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "mcp",
