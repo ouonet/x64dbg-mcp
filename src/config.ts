@@ -3,19 +3,32 @@
  */
 
 import dotenv from "dotenv";
-import path from "path";
 import fs from "fs";
+import path from "path";
 import { fileURLToPath } from "url";
 import type { ServerConfig } from "./types.js";
 
 dotenv.config();
 
+const MAX_SUPPORTED_SESSIONS = 1;
+const BRIDGE_AUTH_TOKEN_FILE = "x64dbg_mcp_bridge.token";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function normalizeX64dbgPath(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  const looksLikeReleaseDir = path.basename(resolved).toLowerCase() === "release";
+  const hasDebuggerLayout =
+    fs.existsSync(path.join(resolved, "x64", "x64dbg.exe")) ||
+    fs.existsSync(path.join(resolved, "x32", "x32dbg.exe"));
+
+  return looksLikeReleaseDir && hasDebuggerLayout ? path.dirname(resolved) : resolved;
+}
+
 function resolveX64dbgPath(): string {
   const envPath = process.env.X64DBG_PATH;
-  if (envPath && fs.existsSync(envPath)) return envPath;
+  if (envPath && fs.existsSync(envPath)) return normalizeX64dbgPath(envPath);
 
   // Project-local x64dbg directory (sibling to src/ and dist/)
   const projectLocal = path.resolve(__dirname, "..", "x64dbg");
@@ -29,10 +42,10 @@ function resolveX64dbgPath(): string {
   ];
 
   for (const p of defaultPaths) {
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) return normalizeX64dbgPath(p);
   }
 
-  return envPath || "C:\\x64dbg";
+  return envPath ? normalizeX64dbgPath(envPath) : "C:\\x64dbg";
 }
 
 function parseEnvInt(value: string | undefined, fallback: number): number {
@@ -41,13 +54,45 @@ function parseEnvInt(value: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+function resolveBridgeAuthToken(x64dbgPath: string): string {
+  const envToken = process.env.BRIDGE_AUTH_TOKEN?.trim();
+  if (envToken) return envToken;
+
+  const tokenCandidates = [
+    path.join(x64dbgPath, "release", "x64", "plugins", BRIDGE_AUTH_TOKEN_FILE),
+    path.join(x64dbgPath, "release", "x32", "plugins", BRIDGE_AUTH_TOKEN_FILE),
+  ];
+
+  for (const tokenPath of tokenCandidates) {
+    if (!fs.existsSync(tokenPath)) continue;
+
+    const token = fs.readFileSync(tokenPath, "utf8").trim();
+    if (token) return token;
+  }
+
+  return "";
+}
+
 export function loadConfig(): ServerConfig {
+  const x64dbgPath = resolveX64dbgPath();
+  const bridgeAuthToken = resolveBridgeAuthToken(x64dbgPath);
+
+  if (!bridgeAuthToken) {
+    throw new Error(
+      "BRIDGE_AUTH_TOKEN is not configured. " +
+        "Run \"npm run setup\" (or postinstall) to generate one, " +
+        "then copy it to your .env file."
+    );
+  }
+
   return {
-    x64dbgPath: resolveX64dbgPath(),
+    x64dbgPath,
     bridgeHost: process.env.BRIDGE_HOST || "127.0.0.1",
     bridgePort: parseEnvInt(process.env.BRIDGE_PORT, 27042),
+    bridgeAuthToken,
     logLevel: (process.env.LOG_LEVEL as ServerConfig["logLevel"]) || "info",
-    maxSessions: parseEnvInt(process.env.MAX_SESSIONS, 5),
+    // The current bridge/debugger architecture supports only one active session.
+    maxSessions: Math.min(parseEnvInt(process.env.MAX_SESSIONS, MAX_SUPPORTED_SESSIONS), MAX_SUPPORTED_SESSIONS),
     sessionTimeoutMs: parseEnvInt(process.env.SESSION_TIMEOUT_MS, 3_600_000),
     maxDisasmInstructions: parseEnvInt(process.env.MAX_DISASM_INSTRUCTIONS, 500),
     maxTraceInstructions: parseEnvInt(process.env.MAX_TRACE_INSTRUCTIONS, 10_000),

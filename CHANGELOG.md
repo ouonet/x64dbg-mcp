@@ -22,6 +22,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   non-Windows platforms the script exits cleanly with a notice instead of failing.
 - README tool count corrected from 36 to 39; `get_status`, `close_debugger`, and
   `collect_bp_args` were missing from the Core Debugging section.
+- `BRIDGE_AUTH_TOKEN` is now mandatory. The MCP server refuses to start if the token
+  is not set; the Python bridge now rejects all connections when no token is configured
+  (previously an empty token disabled auth entirely). `.env.example` updated accordingly.
 
 ---
 

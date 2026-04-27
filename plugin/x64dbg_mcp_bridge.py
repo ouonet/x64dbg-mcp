@@ -19,6 +19,7 @@ Install
 
 from __future__ import annotations
 
+import hmac
 import json
 import math
 import os
@@ -61,6 +62,26 @@ INSIDE_X64DBG = _detect_x64dbg()
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "27042"))
 BUFFER_SIZE = 65536
+BRIDGE_AUTH_TOKEN_FILE = "x64dbg_mcp_bridge.token"
+
+
+def _load_bridge_auth_token() -> str:
+    token = os.environ.get("BRIDGE_AUTH_TOKEN", "").strip()
+    if token:
+        return token
+
+    token_path = os.path.join(_plugin_dir, BRIDGE_AUTH_TOKEN_FILE)
+    if not os.path.exists(token_path):
+        return ""
+
+    try:
+        with open(token_path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+BRIDGE_AUTH_TOKEN = _load_bridge_auth_token()
 
 # Track the last loaded executable path so handlers can resolve PE files from disk
 _loaded_exe_path: Optional[str] = None
@@ -1776,6 +1797,10 @@ class BridgeServer:
         req_id = req.get("id", "")
         method = req.get("method", "")
         params = req.get("params", {})
+        auth_token = str(req.get("authToken", ""))
+
+        if not BRIDGE_AUTH_TOKEN or not hmac.compare_digest(auth_token, BRIDGE_AUTH_TOKEN):
+            return {"id": req_id, "success": False, "error": "Unauthorized bridge request"}
 
         handler_fn = _handlers.get(method)
         if not handler_fn:
