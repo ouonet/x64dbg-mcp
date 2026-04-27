@@ -30,6 +30,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   call, eliminating the current-directory DLL planting risk.
 - `_read_ptr_at` in `x64dbg_mcp_bridge.py` now reads 8 bytes on 64-bit and 4 bytes on
   32-bit, fixing silent pointer truncation when running under x64dbg.
+- `postinstall.mjs` now prints explicit `X64DBG_PATH` instructions when the x64dbg
+  download fails, instead of a bare warning with no recovery guidance (#29).
 
 ---
 

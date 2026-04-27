@@ -141,14 +141,17 @@ if (!x64dbgPath) {
     execSync("node scripts/setup-x64dbg.mjs", { stdio: "inherit", cwd: PKG_ROOT });
     x64dbgPath = findX64dbg();
   } catch {
-    warn("x64dbg download failed — run: npm run setup-x64dbg");
+    warn(
+      "x64dbg download failed. " +
+      "Set X64DBG_PATH in .env to your x64dbg install directory, then run: npm run doctor"
+    );
   }
 }
 if (x64dbgPath) {
   ok(`x64dbg: ${x64dbgPath}`);
   if (env.get("X64DBG_PATH") !== x64dbgPath) { env.set("X64DBG_PATH", x64dbgPath); envChanged = true; }
 } else {
-  warn("x64dbg not found — set X64DBG_PATH in .env");
+  warn("x64dbg not found — add to .env:  X64DBG_PATH=C:\\x64dbg  then re-run: npm run install-plugin");
 }
 
 // 2. Deploy plugin files ───────────────────────────────────────────────────────
