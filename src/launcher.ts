@@ -223,8 +223,16 @@ export async function launchDebugger(
 
 /**
  * Kill the debugger process if it is still running.
+ *
+ * Set KEEP_DEBUGGER=1 in the environment to skip the kill — useful when
+ * the user wants to preserve an in-progress x64dbg analysis session after
+ * the MCP host disconnects.
  */
 export function killDebugger(): void {
+  if (process.env.KEEP_DEBUGGER === "1") {
+    logger.info("KEEP_DEBUGGER=1 — skipping debugger kill");
+    return;
+  }
   if (debuggerProcess && debuggerProcess.exitCode === null) {
     logger.info("Killing debugger process");
     debuggerProcess.kill();

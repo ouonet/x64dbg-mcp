@@ -68,6 +68,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `_require_x64dbg` now uses `_x64dbg_probe_lock` with double-checked locking to
   protect concurrent re-probes of `INSIDE_X64DBG`; `contextlib` imported for
   `nullcontext` in lockless dispatch (#27).
+- `killDebugger()` now respects a `KEEP_DEBUGGER=1` environment variable: when set,
+  shutdown skips the kill so users can preserve an in-progress x64dbg analysis session
+  across MCP host restarts (#3).
+- `BridgeClient.disconnect()` is now `async` and returns a `Promise<void>` that
+  resolves only after the underlying socket emits its `close` event (with a 500 ms
+  safety timeout), ensuring the file descriptor is fully released before the process
+  exits (#28).
+- Graceful shutdown in `server.ts` now `await`s `bridge.disconnect()` so the socket
+  truly closes before `killDebugger()` is called (#28).
+- `BridgeClient` `MAX_BUFFER_BYTES` increased from 4 MB to 16 MB to accommodate large
+  trace / memory-search responses without triggering buffer-overflow disconnects (#8).
 
 ---
 

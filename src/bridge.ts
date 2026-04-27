@@ -22,7 +22,7 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const RECONNECT_DELAY_BASE_MS = 2_000;
 const MAX_RECONNECT_ATTEMPTS = 20;
-const MAX_BUFFER_BYTES = 4 * 1024 * 1024; // 4 MB — guard against runaway data
+const MAX_BUFFER_BYTES = 16 * 1024 * 1024; // 16 MB — accommodate large trace/search responses
 
 type PendingResolver = {
   resolve: (value: BridgeResponse) => void;
@@ -107,14 +107,39 @@ export class BridgeClient extends EventEmitter {
     });
   }
 
-  disconnect(): void {
+  /**
+   * Disconnect from the bridge. Returns a Promise that resolves only after
+   * the underlying socket emits its `close` event (or after a 500 ms safety
+   * timeout), so callers can be certain the file descriptor is released
+   * before the process exits.
+   */
+  async disconnect(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.reconnectAttempts = 0;
     this.rejectAllPending("Bridge disconnecting");
-    this.cleanup();
+
+    const sock = this.socket;
+    this.socket = null;
+    this.connected = false;
+    this.connecting = false;
+
+    if (sock && !sock.destroyed) {
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = (): void => { if (!done) { done = true; resolve(); } };
+        sock.once("close", finish);
+        // Remove data/error listeners before destroy to silence spurious events
+        sock.removeAllListeners("data");
+        sock.removeAllListeners("error");
+        sock.destroy();
+        // Safety: resolve after 500 ms even if close never fires
+        setTimeout(finish, 500);
+      });
+    }
+
     logger.info("Bridge disconnected");
   }
 

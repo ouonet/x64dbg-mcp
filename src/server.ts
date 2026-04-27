@@ -88,7 +88,8 @@ async function main(): Promise<void> {
     sessions.stop();
     // Drain in-flight bridge requests before closing the socket.
     await bridge.drain(5_000);
-    bridge.disconnect();
+    // Wait for the socket to fully close before killing the debugger process.
+    await bridge.disconnect();
     killDebugger();
     process.exit(0);
   };
