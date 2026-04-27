@@ -17,6 +17,11 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  BRIDGE_AUTH_TOKEN_FILE,
+  ensureBridgeAuthToken,
+  writeBridgeTokenFile,
+} from "./bridge-auth.mjs";
 
 // When installed as a dependency: __dirname = node_modules/x64dbg-mcp/scripts
 // When installed globally:        __dirname = <global>/node_modules/x64dbg-mcp/scripts
@@ -52,7 +57,16 @@ function findX64dbg() {
     "C:\\Tools\\x64dbg",
     process.env.USERPROFILE && path.join(process.env.USERPROFILE, "x64dbg"),
   ].filter(Boolean);
-  return candidates.find((p) => p && fs.existsSync(p)) || null;
+  const found = candidates.find((p) => p && fs.existsSync(p)) || null;
+  if (!found) return null;
+
+  const resolved = path.resolve(found);
+  const looksLikeReleaseDir = path.basename(resolved).toLowerCase() === "release";
+  const hasDebuggerLayout =
+    fs.existsSync(path.join(resolved, "x64", "x64dbg.exe")) ||
+    fs.existsSync(path.join(resolved, "x32", "x32dbg.exe"));
+
+  return looksLikeReleaseDir && hasDebuggerLayout ? path.dirname(resolved) : resolved;
 }
 
 function findPythonDir(arch) {
@@ -116,6 +130,8 @@ let envChanged = false;
 const env = fs.existsSync(ENV_FILE)
   ? parseEnv(fs.readFileSync(ENV_FILE, "utf8"))
   : new Map();
+const { token: bridgeAuthToken, created: createdBridgeAuthToken } = ensureBridgeAuthToken(env);
+if (createdBridgeAuthToken) envChanged = true;
 
 // 1. Locate x64dbg — auto-download if not present ─────────────────────────────
 let x64dbgPath = findX64dbg();
@@ -130,7 +146,7 @@ if (!x64dbgPath) {
 }
 if (x64dbgPath) {
   ok(`x64dbg: ${x64dbgPath}`);
-  if (!env.has("X64DBG_PATH")) { env.set("X64DBG_PATH", x64dbgPath); envChanged = true; }
+  if (env.get("X64DBG_PATH") !== x64dbgPath) { env.set("X64DBG_PATH", x64dbgPath); envChanged = true; }
 } else {
   warn("x64dbg not found — set X64DBG_PATH in .env");
 }
@@ -177,6 +193,11 @@ if (x64dbgPath) {
       }
     }
     if (pyOk) ok(`Python bridge files deployed → ${pluginsDir}`);
+
+    const tokenPath = path.join(pluginsDir, BRIDGE_AUTH_TOKEN_FILE);
+    if (writeBridgeTokenFile(tokenPath, bridgeAuthToken)) {
+      ok(`Bridge auth token deployed → ${tokenPath}`);
+    }
   }
 }
 
@@ -208,16 +229,24 @@ const defaults = {
   BRIDGE_HOST: "127.0.0.1",
   BRIDGE_PORT: "27042",
   LOG_LEVEL: "info",
-  MAX_SESSIONS: "5",
   SESSION_TIMEOUT_MS: "3600000",
 };
 for (const [k, v] of Object.entries(defaults)) {
   if (!env.has(k)) { env.set(k, v); envChanged = true; }
 }
 
+if (env.get("MAX_SESSIONS") !== "1") {
+  env.set("MAX_SESSIONS", "1");
+  envChanged = true;
+}
+
 if (envChanged) {
   writeEnv(env);
   ok(`.env written: ${ENV_FILE}`);
+}
+
+if (createdBridgeAuthToken) {
+  ok("Generated BRIDGE_AUTH_TOKEN for local bridge authentication");
 }
 
 // 5. Summary ──────────────────────────────────────────────────────────────────

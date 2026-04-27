@@ -270,6 +270,7 @@ export interface BridgeRequest {
   id: string;
   method: string;
   params: Record<string, unknown>;
+  authToken?: string;
 }
 
 export interface BridgeResponse {
@@ -292,6 +293,7 @@ export interface ServerConfig {
   x64dbgPath: string;
   bridgeHost: string;
   bridgePort: number;
+  bridgeAuthToken: string;
   logLevel: "error" | "warn" | "info" | "debug";
   maxSessions: number;
   sessionTimeoutMs: number;

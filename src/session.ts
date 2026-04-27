@@ -35,7 +35,7 @@ export class SessionManager {
   create(executable: string, architecture: "x86" | "x64", pid: number): Session {
     if (this.sessions.size >= config.maxSessions) {
       throw new Error(
-        `Maximum session limit (${config.maxSessions}) reached. Terminate an existing session first.`
+        "Only one active debugging session is supported. Terminate the current session before loading a new executable."
       );
     }
 

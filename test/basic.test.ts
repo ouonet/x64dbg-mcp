@@ -162,9 +162,9 @@ describe("SessionManager", async () => {
 
   test("list() returns all sessions", () => {
     const mgr = new SessionManager();
-    mgr.create("d.exe", "x64", 4);
-    mgr.create("e.exe", "x86", 5);
-    assert.equal(mgr.list().length, 2);
+    const s = mgr.create("d.exe", "x64", 4);
+    assert.equal(mgr.list().length, 1);
+    assert.equal(mgr.list()[0]?.id, s.id);
   });
 
   test("addBreakpoint() and removeBreakpoint()", () => {
@@ -190,11 +190,12 @@ describe("SessionManager", async () => {
   });
 
   test("throws when max sessions reached", () => {
-    // Override config.maxSessions via env
     const mgr = new SessionManager();
-    // Fill up to default limit (5)
-    for (let i = 0; i < 5; i++) mgr.create(`exe${i}.exe`, "x64", i + 100);
-    assert.throws(() => mgr.create("overflow.exe", "x64", 999), /Maximum session limit/);
+    mgr.create("exe0.exe", "x64", 100);
+    assert.throws(
+      () => mgr.create("overflow.exe", "x64", 999),
+      /Only one active debugging session is supported/
+    );
   });
 });
 

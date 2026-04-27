@@ -10,12 +10,17 @@
  */
 
 import { execSync } from "child_process";
+import dotenv from "dotenv";
 import fs from "fs";
 import net from "net";
 import path from "path";
 import { fileURLToPath } from "url";
+import { BRIDGE_AUTH_TOKEN_FILE } from "./bridge-auth.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const ENV_FILE = path.join(ROOT, ".env");
+
+dotenv.config({ path: ENV_FILE });
 
 // ── colour helpers ──────────────────────────────────────────────────────────
 const isTTY = process.stdout.isTTY;
@@ -50,13 +55,23 @@ function which(cmd) {
   }
 }
 
+function normalizeX64dbgPath(candidate) {
+  const resolved = path.resolve(candidate);
+  const looksLikeReleaseDir = path.basename(resolved).toLowerCase() === "release";
+  const hasDebuggerLayout =
+    fs.existsSync(path.join(resolved, "x64", "x64dbg.exe")) ||
+    fs.existsSync(path.join(resolved, "x32", "x32dbg.exe"));
+
+  return looksLikeReleaseDir && hasDebuggerLayout ? path.dirname(resolved) : resolved;
+}
+
 function resolveX64dbgPath() {
   const env = process.env.X64DBG_PATH;
-  if (env && fs.existsSync(env)) return env;
+  if (env && fs.existsSync(env)) return normalizeX64dbgPath(env);
   const localPath = path.join(ROOT, "x64dbg");
-  if (fs.existsSync(localPath)) return localPath;
+  if (fs.existsSync(localPath)) return normalizeX64dbgPath(localPath);
   for (const p of ["C:\\x64dbg", "C:\\Program Files\\x64dbg", "C:\\Tools\\x64dbg"]) {
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) return normalizeX64dbgPath(p);
   }
   return null;
 }
@@ -120,6 +135,7 @@ if (x64dbgPath) {
   const dp64 = path.join(pluginsDir, "x64dbg_mcp_loader.dp64");
   const bridgePy = path.join(pluginsDir, "x64dbg_mcp_bridge.py");
   const sdkPy = path.join(pluginsDir, "x64dbg_bridge_sdk.py");
+  const tokenFile = path.join(pluginsDir, BRIDGE_AUTH_TOKEN_FILE);
 
   if (fs.existsSync(dp64)) check("Loader plugin (.dp64)", "ok", dp64);
   else check("Loader plugin (.dp64)", "fail",
@@ -131,15 +147,27 @@ if (x64dbgPath) {
     check("Python bridge files", "fail",
       `missing in ${pluginsDir} — run: npm run install-plugin`);
   }
+
+  if (fs.existsSync(tokenFile)) {
+    check("Bridge auth token file", "ok", tokenFile);
+  } else {
+    check("Bridge auth token file", "warn", `missing in ${pluginsDir} — run: npm run install-plugin`);
+  }
 }
 
 // 6. .env configuration
-const envFile = path.join(ROOT, ".env");
-if (fs.existsSync(envFile)) {
-  check(".env file", "ok", envFile);
+if (fs.existsSync(ENV_FILE)) {
+  check(".env file", "ok", ENV_FILE);
 } else {
   check(".env file", "warn",
     "not found — run: npm run setup  (or copy .env.example → .env)");
+}
+
+const bridgeAuthToken = (process.env.BRIDGE_AUTH_TOKEN || "").trim();
+if (bridgeAuthToken) {
+  check("BRIDGE_AUTH_TOKEN", "ok", "configured in .env / environment");
+} else {
+  check("BRIDGE_AUTH_TOKEN", "warn", "not set — local bridge requests are unauthenticated");
 }
 
 // 7. PYTHON_HOME_X64 / PYTHON_HOME_X86

@@ -47,7 +47,9 @@ minimal inline SDK definitions and resolves symbols at runtime.
 2. Copy these Python files **into the same `plugins/` directory**:
    - `x64dbg_bridge_sdk.py`
    - `x64dbg_mcp_bridge.py`
-3. Start x64dbg. The loader initialises Python 3, launches the bridge
+3. Copy the generated `x64dbg_mcp_bridge.token` file into the same `plugins/` directory,
+   or set `BRIDGE_AUTH_TOKEN` in the environment before starting x64dbg.
+4. Start x64dbg. The loader initialises Python 3, launches the bridge
    script in a background thread, and the TCP server starts listening.
 
 ## Configuration
@@ -56,6 +58,7 @@ minimal inline SDK definitions and resolves symbols at runtime.
 |---------------------|---------------|--------------------------------|
 | `BRIDGE_HOST`       | `127.0.0.1`  | TCP bind address               |
 | `BRIDGE_PORT`       | `27042`       | TCP port                       |
+| `BRIDGE_AUTH_TOKEN` | *(auto)*      | Shared secret for localhost clients |
 | `PYTHON_HOME`       | *(auto)*      | Override Python install path   |
 
 ## Testing Standalone

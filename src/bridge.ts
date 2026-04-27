@@ -231,6 +231,9 @@ export class BridgeClient extends EventEmitter {
 
     const id = crypto.randomUUID();
     const req: BridgeRequest = { id, method, params };
+    if (config.bridgeAuthToken) {
+      req.authToken = config.bridgeAuthToken;
+    }
     const payload = JSON.stringify(req) + "\n";
 
     return new Promise<BridgeResponse>((resolve, reject) => {

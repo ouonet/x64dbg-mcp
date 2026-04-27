@@ -37,6 +37,55 @@ function Write-Fail ([string]$msg) { Write-Host "  [FAIL] $msg" -ForegroundColor
 function Write-Info ([string]$msg) { Write-Host "  $msg"        -ForegroundColor Cyan   }
 function Write-Warn ([string]$msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 
+function Get-EnvFileValue([string]$Path, [string]$Name) {
+    if (-not (Test-Path $Path)) { return "" }
+    foreach ($line in Get-Content $Path) {
+        if ($line -match "^\s*$([regex]::Escape($Name))=(.*)$") {
+            return $Matches[1].Trim()
+        }
+    }
+    return ""
+}
+
+function Set-EnvFileValue([string]$Path, [string]$Name, [string]$Value) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (Test-Path $Path) {
+        foreach ($line in Get-Content $Path) {
+            $lines.Add($line)
+        }
+    }
+
+    $updated = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*$([regex]::Escape($Name))=") {
+            $lines[$i] = "$Name=$Value"
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -ne "") {
+            $lines.Add("")
+        }
+        $lines.Add("$Name=$Value")
+    }
+
+    Set-Content -Path $Path -Value $lines -Encoding UTF8
+}
+
+function New-BridgeAuthToken() {
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+    return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+}
+
 # ── resolve x64dbg path ───────────────────────────────────────────────────────
 if (-not $X64dbgPath) {
     $X64dbgPath = $env:X64DBG_PATH
@@ -63,6 +112,19 @@ $loaderDir  = Join-Path $PSScriptRoot "..\plugin\loader"
 $loaderDir  = (Resolve-Path $loaderDir).Path
 $pluginDir  = Join-Path $PSScriptRoot "..\plugin"
 $pluginDir  = (Resolve-Path $pluginDir).Path
+$repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$envFile    = Join-Path $repoRoot ".env"
+$tokenFileName = "x64dbg_mcp_bridge.token"
+
+$bridgeAuthToken = $env:BRIDGE_AUTH_TOKEN
+if (-not $bridgeAuthToken) {
+    $bridgeAuthToken = Get-EnvFileValue -Path $envFile -Name "BRIDGE_AUTH_TOKEN"
+}
+if (-not $bridgeAuthToken) {
+    $bridgeAuthToken = New-BridgeAuthToken
+    Set-EnvFileValue -Path $envFile -Name "BRIDGE_AUTH_TOKEN" -Value $bridgeAuthToken
+    Write-Info "Generated BRIDGE_AUTH_TOKEN in $envFile"
+}
 
 $pluginsX64 = Join-Path $X64dbgPath "release\x64\plugins"
 $pluginsX32 = Join-Path $X64dbgPath "release\x32\plugins"
@@ -127,6 +189,9 @@ foreach ($py in @("x64dbg_mcp_bridge.py", "x64dbg_bridge_sdk.py")) {
     }
 }
 
+Set-Content -Path (Join-Path $pluginsX64 $tokenFileName) -Value $bridgeAuthToken -Encoding UTF8 -NoNewline
+Write-Ok "Installed: $(Join-Path $pluginsX64 $tokenFileName)"
+
 # ── install x32 ──────────────────────────────────────────────────────────────
 if (-not $No32) {
     Write-Host "`nInstalling x32 plugin files...`n" -ForegroundColor White
@@ -147,6 +212,9 @@ if (-not $No32) {
         Copy-Item $src $pluginsX32 -Force
         Write-Ok "Installed: $(Join-Path $pluginsX32 $py)"
     }
+
+    Set-Content -Path (Join-Path $pluginsX32 $tokenFileName) -Value $bridgeAuthToken -Encoding UTF8 -NoNewline
+    Write-Ok "Installed: $(Join-Path $pluginsX32 $tokenFileName)"
 }
 
 # ── done ──────────────────────────────────────────────────────────────────────

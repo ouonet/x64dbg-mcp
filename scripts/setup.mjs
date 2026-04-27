@@ -8,6 +8,7 @@
  * Creates / updates .env with:
  *   - X64DBG_PATH  (auto-detected or prompted)
  *   - BRIDGE_PORT
+ *   - BRIDGE_AUTH_TOKEN
  *   - LOG_LEVEL
  *
  * Then prints what to do next (install plugin, verify with doctor).
@@ -17,6 +18,7 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
+import { ensureBridgeAuthToken } from "./bridge-auth.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const ENV_FILE = path.join(ROOT, ".env");
@@ -75,6 +77,16 @@ function findX64dbgCandidates() {
   return found;
 }
 
+function normalizeX64dbgPath(candidate) {
+  const resolved = path.resolve(candidate);
+  const looksLikeReleaseDir = path.basename(resolved).toLowerCase() === "release";
+  const hasDebuggerLayout =
+    fs.existsSync(path.join(resolved, "x64", "x64dbg.exe")) ||
+    fs.existsSync(path.join(resolved, "x32", "x32dbg.exe"));
+
+  return looksLikeReleaseDir && hasDebuggerLayout ? path.dirname(resolved) : resolved;
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 log(`\n${c.bold}x64dbg-mcp setup${c.rst}\n`);
@@ -124,6 +136,8 @@ if (candidates.length > 0) {
 
 if (x64dbgPath && !fs.existsSync(x64dbgPath)) {
   warn(`Warning: path does not exist: ${x64dbgPath}`);
+} else if (x64dbgPath) {
+  x64dbgPath = normalizeX64dbgPath(x64dbgPath);
 }
 
 // ── Q2: BRIDGE_PORT ──────────────────────────────────────────────────────────
@@ -148,14 +162,18 @@ const env = new Map(existing);
 if (x64dbgPath) env.set("X64DBG_PATH", x64dbgPath);
 env.set("BRIDGE_PORT", bridgePort);
 env.set("LOG_LEVEL", logLevel);
+const { created: createdBridgeAuthToken } = ensureBridgeAuthToken(env);
 
 // Ensure sensible defaults are present
 if (!env.has("BRIDGE_HOST")) env.set("BRIDGE_HOST", "127.0.0.1");
-if (!env.has("MAX_SESSIONS")) env.set("MAX_SESSIONS", "5");
+env.set("MAX_SESSIONS", "1");
 if (!env.has("SESSION_TIMEOUT_MS")) env.set("SESSION_TIMEOUT_MS", "3600000");
 
 fs.writeFileSync(ENV_FILE, serializeEnv(env), "utf8");
 ok(`\n.env written to ${ENV_FILE}`);
+if (createdBridgeAuthToken) {
+  info("Generated BRIDGE_AUTH_TOKEN for local bridge authentication.");
+}
 
 // ── Next steps ────────────────────────────────────────────────────────────────
 
