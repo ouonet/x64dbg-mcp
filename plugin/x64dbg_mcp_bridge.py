@@ -19,6 +19,7 @@ Install
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import math
@@ -54,6 +55,8 @@ def _detect_x64dbg() -> bool:
         return False
 
 INSIDE_X64DBG = _detect_x64dbg()
+# Lock protecting the lazy re-probe of INSIDE_X64DBG from concurrent threads
+_x64dbg_probe_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -122,6 +125,14 @@ _handlers: Dict[str, Callable[..., Any]] = {}
 # commands and corrupt register/state reads between step/continue calls.
 _dispatch_lock = threading.Lock()
 
+# Handlers that only read stable state and do not issue x64dbg commands.
+# They are dispatched without _dispatch_lock so status queries stay
+# responsive while a long-running operation (trace, continue) holds the lock.
+_LOCKLESS_HANDLERS: frozenset[str] = frozenset({
+    "debug.listBreakpoints",  # read-only BridgeList query
+    "analysis.getModules",    # module list query only
+})
+
 
 def handler(method: str):
     """Decorator to register a bridge request handler."""
@@ -137,7 +148,10 @@ def handler(method: str):
 def _require_x64dbg():
     global INSIDE_X64DBG
     if not INSIDE_X64DBG:
-        INSIDE_X64DBG = _detect_x64dbg()
+        with _x64dbg_probe_lock:
+            # Double-checked: re-test inside the lock to avoid redundant probes
+            if not INSIDE_X64DBG:
+                INSIDE_X64DBG = _detect_x64dbg()
     if not INSIDE_X64DBG:
         raise RuntimeError("This handler requires a running x64dbg instance")
 
@@ -241,7 +255,18 @@ def handle_debug_load(params: dict) -> dict:
             _time.sleep(0.1)
     else:
         sdk.DbgCmdExec("erun")
-        _time.sleep(0.5)  # brief wait for execution to start
+        # Confirm execution has actually started (up to 1 s)
+        for _ in range(20):
+            if sdk.DbgIsRunning():
+                break
+            _time.sleep(0.05)
+        # Pause so that auto_analyze and info-gathering run on a stopped process.
+        # We resume below after collecting stable state.
+        sdk.DbgCmdExec("pause")
+        for _ in range(100):  # up to 5 s
+            if not sdk.DbgIsRunning():
+                break
+            _time.sleep(0.05)
 
     if auto_analyze:
         _cmd("analyse")
@@ -261,12 +286,18 @@ def handle_debug_load(params: dict) -> dict:
         log_error(f"get_module_list error: {_me}")
         modules = []
 
-    return {
+    result = {
         "pid": pid,
         "architecture": architecture,
         "entryPoint": _hex(entry),
         "modules": modules,
     }
+
+    # When not breaking on entry, resume now that stable state has been collected
+    if not break_on_entry:
+        sdk.DbgCmdExec("run")
+
+    return result
 
 
 def _wait_for_stop(timeout: float = 120.0) -> None:
@@ -342,7 +373,13 @@ def handle_collect_bp_args(params: dict) -> dict:
     import time as _t
     import struct as _s
 
-    expr      = params.get("expr", "ptr_utf16@[esp+4]")
+    # Detect architecture to choose the correct default calling convention
+    ptr_size = sdk.get_ptr_size()
+    is_x64   = ptr_size == 8
+    # x64 Windows fastcall: first arg is a wchar_t* in rcx
+    # x86 stdcall/cdecl:    first arg is a wchar_t* pointer at [esp+4]
+    default_expr = "rcx" if is_x64 else "ptr_utf16@[esp+4]"
+    expr      = params.get("expr", default_expr)
     max_hits  = int(params.get("maxHits",   200))
     timeout   = float(params.get("timeoutSec", 10.0))
 
@@ -350,8 +387,8 @@ def handle_collect_bp_args(params: dict) -> dict:
     errors:    list[str] = []
 
     def _read_ptr_at(addr: int) -> int:
-        # Pointer width matches the *debugger* bitness (x64dbg → 8 bytes, x32dbg → 4 bytes)
-        if sys.maxsize > 2**32:
+        # Pointer width matches the *debuggee* bitness (not the debugger process)
+        if is_x64:
             raw = sdk.read_memory(addr, 8)
             return _s.unpack_from("<Q", raw)[0]
         else:
@@ -370,10 +407,14 @@ def handle_collect_bp_args(params: dict) -> dict:
 
     def _read_expr_val() -> str:
         try:
-            esp = _eval_expr("esp")
-            if expr == "ptr_utf16@[esp+4]":
-                ptr_addr = esp + 4
-                ptr_val  = _read_ptr_at(ptr_addr)
+            if expr == "rcx":
+                # x64 Windows fastcall: first arg is a wchar_t* in rcx
+                ptr_val = _eval_expr("rcx")
+                return _read_wstr(ptr_val)
+            elif expr == "ptr_utf16@[esp+4]":
+                # x86 stdcall/cdecl: first arg is a wchar_t* pointer at [esp+4]
+                esp = _eval_expr("esp")
+                ptr_val = _read_ptr_at(esp + 4)
                 return _read_wstr(ptr_val)
             elif expr.startswith("utf16@"):
                 # direct: evaluate the address part and read UTF-16 from there
@@ -1825,7 +1866,8 @@ class BridgeServer:
                 pass
         _tr(f"dispatch: {method}")
 
-        with _dispatch_lock:
+        lock_ctx = contextlib.nullcontext() if method in _LOCKLESS_HANDLERS else _dispatch_lock
+        with lock_ctx:
             try:
                 result = handler_fn(params)
                 _tr(f"dispatch OK: {method}")

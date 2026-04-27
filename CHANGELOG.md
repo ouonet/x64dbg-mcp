@@ -55,6 +55,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wraps any tool handler with automatic error catch + `logToolCall` instrumentation (#16).
 - `launchDebugger` and `launchAndConnect` no longer accept a `cmdLineArgs` parameter —
   command-line arguments are passed via `debug.load` after the bridge is ready (#5).
+- `debug.load` (`breakOnEntry=false`) now issues a `pause` command after `erun`,
+  waits for the debuggee to stop, gathers stable state (pid, entry, modules) and runs
+  `autoAnalyze`, then resumes — eliminating the 500 ms sleep race condition (#4).
+- `debug.collectBreakpointArgs` auto-selects the architecture-appropriate default
+  expression: `"rcx"` for x64 (Windows fastcall first arg) and `"ptr_utf16@[esp+4]"`
+  for x86 (stdcall/cdecl first arg); `_read_ptr_at` now uses debuggee ptr size instead
+  of debugger process `sys.maxsize` (#6).
+- `debug.listBreakpoints` and `analysis.getModules` are dispatched without
+  `_dispatch_lock` (added to `_LOCKLESS_HANDLERS`) so status queries remain responsive
+  during long-running operations (trace, continue) that hold the lock (#9).
+- `_require_x64dbg` now uses `_x64dbg_probe_lock` with double-checked locking to
+  protect concurrent re-probes of `INSIDE_X64DBG`; `contextlib` imported for
+  `nullcontext` in lockless dispatch (#27).
 
 ---
 
