@@ -109,9 +109,11 @@ $X64dbgPath = (Resolve-Path $X64dbgPath).Path
 Write-Ok "x64dbg path: $X64dbgPath"
 
 $loaderDir  = Join-Path $PSScriptRoot "..\plugin\loader"
-$loaderDir  = (Resolve-Path $loaderDir).Path
+if (Test-Path $loaderDir) { $loaderDir = (Resolve-Path $loaderDir).Path }
+$prebuiltDir = Join-Path $PSScriptRoot "..\plugin\loader\prebuilt"
+if (Test-Path $prebuiltDir) { $prebuiltDir = (Resolve-Path $prebuiltDir).Path }
 $pluginDir  = Join-Path $PSScriptRoot "..\plugin"
-$pluginDir  = (Resolve-Path $pluginDir).Path
+if (Test-Path $pluginDir) { $pluginDir = (Resolve-Path $pluginDir).Path }
 $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $envFile    = Join-Path $repoRoot ".env"
 $tokenFileName = "x64dbg_mcp_bridge.token"
@@ -130,7 +132,9 @@ $pluginsX64 = Join-Path $X64dbgPath "release\x64\plugins"
 $pluginsX32 = Join-Path $X64dbgPath "release\x32\plugins"
 
 # ── build ─────────────────────────────────────────────────────────────────────
-if (-not $NoBuild) {
+$hasSources = Test-Path (Join-Path $loaderDir "CMakeLists.txt")
+
+if (-not $NoBuild -and $hasSources) {
     Write-Host "`nBuilding C loader plugin...`n" -ForegroundColor White
 
     # Check CMake
@@ -146,7 +150,7 @@ if (-not $NoBuild) {
     cmake --build "$loaderDir\build64" --config Release
     $dp64 = "$loaderDir\build64\Release\x64dbg_mcp_loader.dp64"
     if (Test-Path $dp64) { Write-Ok "Built: $dp64" }
-    else { Write-Fail "Build failed — .dp64 not found at $dp64"; exit 1 }
+    else { Write-Fail "Build failed - .dp64 not found at $dp64"; exit 1 }
 
     # 32-bit (default; skip with -No32)
     if (-not $No32) {
@@ -156,8 +160,10 @@ if (-not $NoBuild) {
         cmake --build "$loaderDir\build32" --config Release
         $dp32 = "$loaderDir\build32\Release\x64dbg_mcp_loader.dp32"
         if (Test-Path $dp32) { Write-Ok "Built: $dp32" }
-        else { Write-Warn ".dp32 not found — 32-bit install will be skipped" }
+        else { Write-Warn ".dp32 not found - 32-bit install will use prebuilt" }
     }
+} elseif (-not $NoBuild -and -not $hasSources) {
+    Write-Info "Source not available - using prebuilt loader binaries"
 } else {
     Write-Warn "Skipping build (-NoBuild)"
 }
@@ -171,11 +177,13 @@ if (-not (Test-Path $pluginsX64)) {
 }
 
 $dp64 = "$loaderDir\build64\Release\x64dbg_mcp_loader.dp64"
+if (-not (Test-Path $dp64)) { $dp64 = Join-Path $prebuiltDir "x64dbg_mcp_loader.dp64" }
 if (Test-Path $dp64) {
     Copy-Item $dp64 $pluginsX64 -Force
     Write-Ok "Installed: $(Join-Path $pluginsX64 'x64dbg_mcp_loader.dp64')"
 } else {
-    Write-Warn "x64dbg_mcp_loader.dp64 not found — skipping (run without -NoBuild to compile)"
+    Write-Fail "x64dbg_mcp_loader.dp64 not found in build output or prebuilt/"
+    exit 1
 }
 
 foreach ($py in @("x64dbg_mcp_bridge.py", "x64dbg_bridge_sdk.py")) {
@@ -202,9 +210,12 @@ if (-not $No32) {
     }
 
     $dp32 = "$loaderDir\build32\Release\x64dbg_mcp_loader.dp32"
+    if (-not (Test-Path $dp32)) { $dp32 = Join-Path $prebuiltDir "x64dbg_mcp_loader.dp32" }
     if (Test-Path $dp32) {
         Copy-Item $dp32 $pluginsX32 -Force
         Write-Ok "Installed: $(Join-Path $pluginsX32 'x64dbg_mcp_loader.dp32')"
+    } else {
+        Write-Warn "x64dbg_mcp_loader.dp32 not found - skipping 32-bit loader"
     }
 
     foreach ($py in @("x64dbg_mcp_bridge.py", "x64dbg_bridge_sdk.py")) {
@@ -222,7 +233,7 @@ Write-Host ""
 Write-Host "Plugin installation complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Start (or restart) x64dbg — the loader will auto-start the bridge."
+Write-Host "  1. Start (or restart) x64dbg - the loader will auto-start the bridge."
 Write-Host "  2. Run: npm run doctor    (verify everything is working)"
 Write-Host "  3. Run: npm start         (start the MCP server)"
 Write-Host ""

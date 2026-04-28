@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * setup-x64dbg — download and unpack the latest x64dbg snapshot
+ * setup-x64dbg — download and unpack the latest x64dbg release
  *
  * Usage:
- *   npm run setup-x64dbg                 # latest release
- *   npm run setup-x64dbg -- --force      # re-download even if already present
- *   npm run setup-x64dbg -- --tag snapshot_2024-09-10_00-00
+ *   npm run setup-x64dbg                    # latest stable release
+ *   npm run setup-x64dbg -- --snapshot      # latest snapshot build instead
+ *   npm run setup-x64dbg -- --force         # re-download even if already present
+ *   npm run setup-x64dbg -- --no-cache      # skip cache (download but don't store)
+ *   npm run setup-x64dbg -- --tag snapshot_2024-09-10_00-00  # specific tag
  *
+ * Cache: ~/.cache/x64dbg-mcp/<tag>.zip  (override with X64DBG_MCP_CACHE_DIR)
  * Output: ./x64dbg/  (project-local, gitignored)
  */
 
@@ -25,6 +28,8 @@ const REPO       = "x64dbg/x64dbg";
 // ── parse args ────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
 const force = argv.includes("--force");
+const noCache = argv.includes("--no-cache");
+const useSnapshot = argv.includes("--snapshot");
 const tagArg = (() => {
   const i = argv.indexOf("--tag");
   return i !== -1 ? argv[i + 1] : null;
@@ -34,8 +39,11 @@ const destArg = (() => {
   return i !== -1 ? argv[i + 1] : null;
 })();
 
-const DEST    = destArg ? path.resolve(destArg) : path.join(ROOT, "x64dbg");
-const TMP_ZIP = path.join(path.dirname(DEST), "x64dbg-snapshot.zip");
+const DEST      = destArg ? path.resolve(destArg) : path.join(ROOT, "x64dbg");
+const TMP_ZIP   = path.join(path.dirname(DEST), "x64dbg-snapshot.zip");
+const CACHE_DIR = process.env.X64DBG_MCP_CACHE_DIR
+  ? path.resolve(process.env.X64DBG_MCP_CACHE_DIR)
+  : path.join(os.homedir(), ".cache", "x64dbg-mcp");
 
 const isTTY = process.stdout.isTTY;
 const c = {
@@ -118,9 +126,9 @@ function writeCommitHash(tag, dir) {
 }
 
 // ── GitHub token resolution ──────────────────────────────────────────────────
-// Priority: .env GITHUB_TOKEN → ~/.config/x64dbg-mcp/github_tokens.toml → GH_TOKEN env → prompt
+// Priority: .env GITHUB_TOKEN → ~/.config/x64dbg-mcp/config.toml → GH_TOKEN env → prompt
 
-const TOML_PATH = path.join(os.homedir(), ".config", "x64dbg-mcp", "github_tokens.toml");
+const TOML_PATH = path.join(os.homedir(), ".config", "x64dbg-mcp", "config.toml");
 
 function readEnvToken() {
   // Same priority chain as config.ts resolveEnvFile
@@ -155,9 +163,9 @@ async function promptForToken() {
 
   const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
   const save = (await new Promise(r => rl2.question(
-    `  Save token to ${TOML_PATH}? [Y/n]: `, r))).trim().toLowerCase();
+    `  Save token to ${TOML_PATH}? [y/N]: `, r))).trim().toLowerCase();
   rl2.close();
-  if (save !== "n") {
+  if (save === "y") {
     fs.mkdirSync(path.dirname(TOML_PATH), { recursive: true });
     fs.writeFileSync(TOML_PATH, `GITHUB_TOKEN = "${token}"\n`, "utf8");
     ok(`Token saved to ${TOML_PATH}`);
@@ -197,10 +205,10 @@ const authHeaders = githubToken ? { "Authorization": `Bearer ${githubToken}` } :
 // Resolve tag ──────────────────────────────────────────────────────────────────
 let tag = tagArg;
 if (!tag) {
-  info("Fetching latest release info from GitHub…");
+  info(`Fetching latest ${useSnapshot ? "snapshot" : "release"} info from GitHub…`);
   const { status, body } = await httpsGet({
     hostname: GITHUB_API,
-    path: `/repos/${REPO}/releases?per_page=5`,
+    path: `/repos/${REPO}/releases?per_page=20`,
     headers: {
       "User-Agent": "x64dbg-mcp-setup",
       "Accept": "application/vnd.github+json",
@@ -219,22 +227,52 @@ if (!tag) {
   }
 
   const releases = JSON.parse(body.toString("utf8"));
-  // Find first release that has a zip asset (the snapshot)
-  const release = releases.find(r => r.assets?.some(a => a.name.endsWith(".zip")));
-  if (!release) fail("No snapshot release found. Check https://github.com/x64dbg/x64dbg/releases");
+  // Stable releases: tag does NOT start with "snapshot_"
+  // Snapshot releases: tag starts with "snapshot_"
+  const isSnapshot = (r) => r.tag_name.startsWith("snapshot_");
+  const release = releases.find(r =>
+    (useSnapshot ? isSnapshot(r) : !isSnapshot(r)) &&
+    r.assets?.some(a => a.name.endsWith(".zip"))
+  );
+  if (!release) {
+    const kind = useSnapshot ? "snapshot" : "stable release";
+    fail(`No ${kind} with a zip asset found. Try --snapshot or check https://github.com/x64dbg/x64dbg/releases`);
+  }
 
   tag = release.tag_name;
   const asset = release.assets.find(a => a.name.endsWith(".zip"));
-  ok(`Latest release: ${tag}`);
+  ok(`Latest ${useSnapshot ? "snapshot" : "release"}: ${tag}`);
 
-  // Download ───────────────────────────────────────────────────────────────────
-  info(`Downloading ${asset.name} (${(asset.size / 1e6).toFixed(1)} MB)…`);
-  await download(asset.browser_download_url, TMP_ZIP);
+  // Download (with cache) ──────────────────────────────────────────────────────
+  const cachedZip = path.join(CACHE_DIR, `${tag}.zip`);
+  if (!force && !noCache && fs.existsSync(cachedZip)) {
+    ok(`Cache hit: ${cachedZip}`);
+    fs.copyFileSync(cachedZip, TMP_ZIP);
+  } else {
+    info(`Downloading ${asset.name} (${(asset.size / 1e6).toFixed(1)} MB)…`);
+    await download(asset.browser_download_url, TMP_ZIP);
+    if (!noCache) {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      fs.copyFileSync(TMP_ZIP, cachedZip);
+      ok(`Cached to ${cachedZip}`);
+    }
+  }
 } else {
   // Manual tag: construct URL
-  const url = `https://github.com/${REPO}/releases/download/${tag}/${tag}.zip`;
-  info(`Downloading tag ${tag}…`);
-  await download(url, TMP_ZIP);
+  const cachedZip = path.join(CACHE_DIR, `${tag}.zip`);
+  if (!force && !noCache && fs.existsSync(cachedZip)) {
+    ok(`Cache hit: ${cachedZip}`);
+    fs.copyFileSync(cachedZip, TMP_ZIP);
+  } else {
+    const url = `https://github.com/${REPO}/releases/download/${tag}/${tag}.zip`;
+    info(`Downloading tag ${tag}…`);
+    await download(url, TMP_ZIP);
+    if (!noCache) {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      fs.copyFileSync(TMP_ZIP, cachedZip);
+      ok(`Cached to ${cachedZip}`);
+    }
+  }
 }
 
 ok(`Downloaded to ${TMP_ZIP}`);

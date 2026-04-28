@@ -4,6 +4,7 @@
 
 import dotenv from "dotenv";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { ServerConfig } from "./types.js";
@@ -15,22 +16,20 @@ const __dirname = path.dirname(__filename);
 
 /**
  * Resolve the .env file to load, in priority order:
- *  1. X64DBG_MCP_CONFIG env var (explicit override)
- *  2. process.cwd()/.env  (local project install)
- *  3. %APPDATA%\x64dbg-mcp\.env  (global install, Windows)
- *  4. <pkg-root>/.env  (dev / bundled)
+ *  1. X64DBG_MCP_CONFIG env var  (explicit override)
+ *  2. Global install → ~/.config/x64dbg-mcp/.env
+ *  3. process.cwd()/.env         (local project)
+ *  4. <pkg-root>/.env            (source repo dev / fallback)
  */
 function resolveEnvFile(): string {
   if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
 
+  // Global install writes config to ~/.config/x64dbg-mcp/.env
+  const globalEnv = path.join(os.homedir(), ".config", "x64dbg-mcp", ".env");
+  if (fs.existsSync(globalEnv)) return globalEnv;
+
   const cwdEnv = path.join(process.cwd(), ".env");
   if (fs.existsSync(cwdEnv)) return cwdEnv;
-
-  const appData = process.env.APPDATA;
-  if (appData) {
-    const appdataEnv = path.join(appData, "x64dbg-mcp", ".env");
-    if (fs.existsSync(appdataEnv)) return appdataEnv;
-  }
 
   const pkgEnv = path.resolve(__dirname, "..", ".env");
   if (fs.existsSync(pkgEnv)) return pkgEnv;

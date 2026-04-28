@@ -16,6 +16,7 @@
 
 import { execSync } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
@@ -24,9 +25,12 @@ import { ensureBridgeAuthToken } from "./bridge-auth.mjs";
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const ENV_EXAMPLE = path.join(ROOT, ".env.example");
 
-// Detect dev (source repo) vs dependency/global install
-const isDevInstall = !process.env.INIT_CWD ||
-  path.resolve(process.env.INIT_CWD) === path.resolve(ROOT);
+// Install context detection
+const isGlobalInstall = process.env.npm_config_global === "true";
+const isDevInstall    = !isGlobalInstall && (
+  !process.env.INIT_CWD ||
+  path.resolve(process.env.INIT_CWD) === path.resolve(ROOT)
+);
 
 /** Returns the right command depending on install context. */
 function cmd(npmScript, subcommand) {
@@ -37,22 +41,20 @@ function cmd(npmScript, subcommand) {
  * Resolve where .env should be read from / written to.
  *
  * Priority:
- *  1. X64DBG_MCP_CONFIG env var        (explicit override)
- *  2. process.cwd()/.env exists        (user is in a local project)
- *  3. %APPDATA%\x64dbg-mcp\.env       (global install on Windows)
- *  4. ROOT/.env                         (dev / fallback)
+ *  1. X64DBG_MCP_CONFIG env var  (explicit override)
+ *  2. Global install → ~/.config/x64dbg-mcp/.env
+ *  3. cwd/.env exists            (user is already in a configured project)
+ *  4. Local/dev → cwd/.env       (write here for local & source-repo installs)
  */
 function resolveEnvFile() {
   if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
-  const cwdEnv = path.join(process.cwd(), ".env");
-  if (fs.existsSync(cwdEnv)) return cwdEnv;
-  const appData = process.env.APPDATA;
-  if (appData) {
-    const dir = path.join(appData, "x64dbg-mcp");
+  if (isGlobalInstall) {
+    const dir = path.join(os.homedir(), ".config", "x64dbg-mcp");
     fs.mkdirSync(dir, { recursive: true });
     return path.join(dir, ".env");
   }
-  return path.join(ROOT, ".env");
+  // For both local-project and source-repo installs, write into cwd
+  return path.join(process.env.INIT_CWD || process.cwd(), ".env");
 }
 
 const ENV_FILE = resolveEnvFile();
@@ -161,20 +163,24 @@ if (candidates.length > 0) {
     x64dbgPath = x64dbgPath || candidates[0];
   }
 } else {
-  // No x64dbg found anywhere. Try to auto-download the bundled snapshot first.
-  // Dev install: download to ROOT/x64dbg. User install: download to %APPDATA%\x64dbg-mcp\x64dbg.
+  // No x64dbg found anywhere. Try to auto-download the latest release.
+  // Dev install: download to ROOT/x64dbg.
+  // Global install: download to ~/.config/x64dbg-mcp/x64dbg.
+  // Local dependency: download to INIT_CWD/x64dbg.
   const bundledPath = isDevInstall
     ? path.join(ROOT, "x64dbg")
-    : path.join(process.env.APPDATA || path.join(ROOT, "x64dbg"), "x64dbg-mcp", "x64dbg");
+    : isGlobalInstall
+      ? path.join(os.homedir(), ".config", "x64dbg-mcp", "x64dbg")
+      : path.join(process.env.INIT_CWD || process.cwd(), "x64dbg");
   if (!fs.existsSync(bundledPath)) {
-    info("x64dbg not found locally. Attempting to download the bundled snapshot…");
+    info("x64dbg not found locally. Attempting to download the latest release…");
     try {
       const setupX64 = path.join(ROOT, "scripts", "setup-x64dbg.mjs");
       const destFlag = isDevInstall ? "" : `--dest ${JSON.stringify(bundledPath)}`;
       execSync(`node ${JSON.stringify(setupX64)} ${destFlag}`.trim(),
         { stdio: "inherit", cwd: ROOT });
     } catch {
-      warn("Download failed. You can retry later with: x64dbg-mcp setup");
+      warn(`Download failed. You can retry later with: ${cmd("setup", "setup")}\n  Or add --snapshot to fetch a nightly build instead.`);
     }
   }
 

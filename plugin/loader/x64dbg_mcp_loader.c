@@ -215,7 +215,7 @@ static BOOL loadPython(void) {
         AddDllDirectory(wPluginDir);
     }
 
-    /* Strategy 1: arch-specific env var (highest priority — no DLL copy needed)
+    /* Strategy 1: arch-specific env var (highest priority - no DLL copy needed)
      *   PYTHON_HOME_X64  e.g. C:\Python314
      *   PYTHON_HOME_X86  e.g. C:\Python312-32
      * Set via .env / system environment before launching x64dbg.            */
@@ -277,7 +277,7 @@ static BOOL loadPython(void) {
                 snprintf(dllPath, MAX_PATH, "loadPython: loaded %s from plugin dir", bestDll);
                 debugFileLog(dllPath);
             } else {
-                err = GetLastError();
+                DWORD err = GetLastError();
                 snprintf(dllPath, MAX_PATH, "loadPython: %s failed (err=%lu)", bestDll, err);
                 debugFileLog(dllPath);
             }

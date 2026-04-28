@@ -14,24 +14,31 @@ import { execSync } from "child_process";
 import dotenv from "dotenv";
 import fs from "fs";
 import net from "net";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { BRIDGE_AUTH_TOKEN_FILE } from "./bridge-auth.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+const isGlobalInstall = process.env.npm_config_global === "true";
+
 /**
- * Resolve .env path (mirrors config.ts / setup.mjs logic).
+ * Resolve .env path (mirrors config.ts / postinstall.mjs / setup.mjs logic).
+ *
+ * Priority:
+ *  1. X64DBG_MCP_CONFIG env var  (explicit override)
+ *  2. Global install → ~/.config/x64dbg-mcp/.env
+ *  3. cwd/.env exists            (local project or source repo)
+ *  4. ROOT/.env                  (source repo fallback)
  */
 function resolveEnvFile() {
   if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
+  if (isGlobalInstall) {
+    return path.join(os.homedir(), ".config", "x64dbg-mcp", ".env");
+  }
   const cwdEnv = path.join(process.cwd(), ".env");
   if (fs.existsSync(cwdEnv)) return cwdEnv;
-  const appData = process.env.APPDATA;
-  if (appData) {
-    const appdataEnv = path.join(appData, "x64dbg-mcp", ".env");
-    if (fs.existsSync(appdataEnv)) return appdataEnv;
-  }
   return path.join(ROOT, ".env");
 }
 
@@ -147,27 +154,29 @@ if (x64dbgPath) {
 
 // 5. Plugin files deployed
 if (x64dbgPath) {
-  const pluginsDir = path.join(x64dbgPath, "release", "x64", "plugins");
-  const dp64 = path.join(pluginsDir, "x64dbg_mcp_loader.dp64");
-  const bridgePy = path.join(pluginsDir, "x64dbg_mcp_bridge.py");
-  const sdkPy = path.join(pluginsDir, "x64dbg_bridge_sdk.py");
-  const tokenFile = path.join(pluginsDir, BRIDGE_AUTH_TOKEN_FILE);
+  for (const [arch, ext] of [["x64", "dp64"], ["x32", "dp32"]]) {
+    const pluginsDir = path.join(x64dbgPath, "release", arch, "plugins");
+    const loaderFile = path.join(pluginsDir, `x64dbg_mcp_loader.${ext}`);
+    const bridgePy   = path.join(pluginsDir, "x64dbg_mcp_bridge.py");
+    const sdkPy      = path.join(pluginsDir, "x64dbg_bridge_sdk.py");
+    const tokenFile  = path.join(pluginsDir, BRIDGE_AUTH_TOKEN_FILE);
 
-  if (fs.existsSync(dp64)) check("Loader plugin (.dp64)", "ok", dp64);
-  else check("Loader plugin (.dp64)", "fail",
-    `not found — run: npm run install-plugin`);
+    if (fs.existsSync(loaderFile)) check(`Loader plugin (.${ext})`, "ok", loaderFile);
+    else check(`Loader plugin (.${ext})`, "fail",
+      `not found — run: npm run install-plugin`);
 
-  if (fs.existsSync(bridgePy) && fs.existsSync(sdkPy)) {
-    check("Python bridge files", "ok", pluginsDir);
-  } else {
-    check("Python bridge files", "fail",
-      `missing in ${pluginsDir} — run: npm run install-plugin`);
-  }
+    if (fs.existsSync(bridgePy) && fs.existsSync(sdkPy)) {
+      check(`Python bridge files (${arch})`, "ok", pluginsDir);
+    } else {
+      check(`Python bridge files (${arch})`, "fail",
+        `missing in ${pluginsDir} — run: npm run install-plugin`);
+    }
 
-  if (fs.existsSync(tokenFile)) {
-    check("Bridge auth token file", "ok", tokenFile);
-  } else {
-    check("Bridge auth token file", "warn", `missing in ${pluginsDir} — run: npm run install-plugin`);
+    if (fs.existsSync(tokenFile)) {
+      check(`Bridge auth token file (${arch})`, "ok", tokenFile);
+    } else {
+      check(`Bridge auth token file (${arch})`, "warn", `missing in ${pluginsDir} — run: npm run install-plugin`);
+    }
   }
 }
 

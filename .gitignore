@@ -11,3 +11,4 @@ docs/superpowers
 .vscode
 CLAUDE.md
 **/__pycache__/
+**/*.tgz

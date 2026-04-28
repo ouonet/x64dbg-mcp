@@ -15,6 +15,7 @@
 
 import { execSync } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
@@ -27,11 +28,12 @@ import {
 // When installed globally:        __dirname = <global>/node_modules/x64dbg-mcp/scripts
 const PKG_ROOT  = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-// Detect whether we're running inside the source repo (dev install) or as a
-// dependency / global install.  When the user runs `npm install` inside the
-// cloned repo, INIT_CWD equals PKG_ROOT.  When installed elsewhere, they differ.
-const isDevInstall = !process.env.INIT_CWD ||
-  path.resolve(process.env.INIT_CWD) === path.resolve(PKG_ROOT);
+// Install context detection
+const isGlobalInstall = process.env.npm_config_global === "true";
+const isDevInstall    = !isGlobalInstall && (
+  !process.env.INIT_CWD ||
+  path.resolve(process.env.INIT_CWD) === path.resolve(PKG_ROOT)
+);
 
 // Returns the right command string depending on install context.
 // Dev install → `npm run <script>`, dependency/global → `x64dbg-mcp <sub>`
@@ -44,20 +46,20 @@ function cmd(npmScript, subcommand) {
  *
  * Priority:
  *  1. X64DBG_MCP_CONFIG env var  (explicit override)
- *  2. INIT_CWD/.env              (during npm install lifecycle: local project)
- *  3. %APPDATA%\x64dbg-mcp\.env (global install on Windows)
- *  4. PKG_ROOT/.env              (dev / fallback)
+ *  2. Global install → ~/.config/x64dbg-mcp/.env
+ *  3. Local/dev install → INIT_CWD/.env  (= project root during npm install)
+ *  4. Fallback → PKG_ROOT/.env  (source repo dev)
  */
 function resolveEnvFile() {
   if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
-  if (process.env.INIT_CWD) return path.join(process.env.INIT_CWD, ".env");
-  const appData = process.env.APPDATA;
-  if (appData) {
-    const dir = path.join(appData, "x64dbg-mcp");
+  if (isGlobalInstall) {
+    const dir = path.join(os.homedir(), ".config", "x64dbg-mcp");
     fs.mkdirSync(dir, { recursive: true });
     return path.join(dir, ".env");
   }
-  return path.join(PKG_ROOT, ".env");
+  // Local project install: write .env next to the user's package.json
+  const projectDir = process.env.INIT_CWD || PKG_ROOT;
+  return path.join(projectDir, ".env");
 }
 
 const ENV_FILE = resolveEnvFile();
