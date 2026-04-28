@@ -12,13 +12,13 @@
 
 import fs from "fs";
 import https from "https";
+import os from "os";
 import path from "path";
+import readline from "readline";
 import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 
 const ROOT      = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const DEST      = path.join(ROOT, "x64dbg");
-const TMP_ZIP   = path.join(ROOT, "x64dbg-snapshot.zip");
 const GITHUB_API = "api.github.com";
 const REPO       = "x64dbg/x64dbg";
 
@@ -29,6 +29,13 @@ const tagArg = (() => {
   const i = argv.indexOf("--tag");
   return i !== -1 ? argv[i + 1] : null;
 })();
+const destArg = (() => {
+  const i = argv.indexOf("--dest");
+  return i !== -1 ? argv[i + 1] : null;
+})();
+
+const DEST    = destArg ? path.resolve(destArg) : path.join(ROOT, "x64dbg");
+const TMP_ZIP = path.join(path.dirname(DEST), "x64dbg-snapshot.zip");
 
 const isTTY = process.stdout.isTTY;
 const c = {
@@ -110,6 +117,66 @@ function writeCommitHash(tag, dir) {
   fs.writeFileSync(path.join(dir, "commithash.txt"), tag + "\n", "utf8");
 }
 
+// ── GitHub token resolution ──────────────────────────────────────────────────
+// Priority: .env GITHUB_TOKEN → ~/.config/x64dbg-mcp/github_tokens.toml → GH_TOKEN env → prompt
+
+const TOML_PATH = path.join(os.homedir(), ".config", "x64dbg-mcp", "github_tokens.toml");
+
+function readEnvToken() {
+  // Same priority chain as config.ts resolveEnvFile
+  const candidates = [];
+  if (process.env.X64DBG_MCP_CONFIG) candidates.push(process.env.X64DBG_MCP_CONFIG);
+  candidates.push(path.join(process.cwd(), ".env"));
+  if (process.env.APPDATA) candidates.push(path.join(process.env.APPDATA, "x64dbg-mcp", ".env"));
+  candidates.push(path.join(ROOT, ".env"));
+  for (const f of candidates) {
+    if (!fs.existsSync(f)) continue;
+    const m = fs.readFileSync(f, "utf8").match(/^GITHUB_TOKEN\s*=\s*(.+)$/m);
+    if (m) { const v = m[1].trim().replace(/^"|"$/g, "").replace(/^'|'$/g, ""); if (v) return v; }
+  }
+  return null;
+}
+
+function readTomlToken() {
+  if (!fs.existsSync(TOML_PATH)) return null;
+  try {
+    const m = fs.readFileSync(TOML_PATH, "utf8").match(/^GITHUB_TOKEN\s*=\s*"([^"]+)"/im);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+async function promptForToken() {
+  if (!isTTY) return null;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(r => rl.question(q, r));
+  const token = (await ask(`  ${c.dim}Enter GitHub Personal Access Token (blank to skip):${c.rst} `)).trim();
+  rl.close();
+  if (!token) return null;
+
+  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const save = (await new Promise(r => rl2.question(
+    `  Save token to ${TOML_PATH}? [Y/n]: `, r))).trim().toLowerCase();
+  rl2.close();
+  if (save !== "n") {
+    fs.mkdirSync(path.dirname(TOML_PATH), { recursive: true });
+    fs.writeFileSync(TOML_PATH, `GITHUB_TOKEN = "${token}"\n`, "utf8");
+    ok(`Token saved to ${TOML_PATH}`);
+  }
+  return token;
+}
+
+async function resolveGithubToken() {
+  const envToken = readEnvToken();
+  if (envToken) { info("Using GITHUB_TOKEN from .env"); return envToken; }
+
+  const tomlToken = readTomlToken();
+  if (tomlToken) { info(`Using GITHUB_TOKEN from ${TOML_PATH}`); return tomlToken; }
+
+  if (process.env.GH_TOKEN) { info("Using GH_TOKEN from environment"); return process.env.GH_TOKEN; }
+
+  return promptForToken();
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 log(`\n${c.bold}x64dbg setup${c.rst}\n`);
@@ -123,6 +190,10 @@ if (fs.existsSync(DEST) && !force) {
   process.exit(0);
 }
 
+// ── GitHub auth token (avoids 60 req/h anonymous rate limit) ─────────────────
+const githubToken = await resolveGithubToken();
+const authHeaders = githubToken ? { "Authorization": `Bearer ${githubToken}` } : {};
+
 // Resolve tag ──────────────────────────────────────────────────────────────────
 let tag = tagArg;
 if (!tag) {
@@ -133,11 +204,18 @@ if (!tag) {
     headers: {
       "User-Agent": "x64dbg-mcp-setup",
       "Accept": "application/vnd.github+json",
+      ...authHeaders,
     },
   });
 
   if (status !== 200) {
-    fail(`GitHub API returned HTTP ${status}. If rate-limited, pass --tag manually:\n     npm run setup-x64dbg -- --tag snapshot_YYYY-MM-DD_HH-mm`);
+    const hint = destArg
+      ? `x64dbg-mcp setup --tag snapshot_YYYY-MM-DD_HH-mm`
+      : `npm run setup-x64dbg -- --tag snapshot_YYYY-MM-DD_HH-mm`;
+    const tokenHint = githubToken
+      ? "\n     Token was used but still got 403 — check token scopes/expiry."
+      : "\n     Set GITHUB_TOKEN in .env or run setup again to enter a token.";
+    fail(`GitHub API returned HTTP ${status}. If rate-limited, find a tag at:\n     https://github.com/x64dbg/x64dbg/releases\n     then pass it manually: ${hint}${tokenHint}`);
   }
 
   const releases = JSON.parse(body.toString("utf8"));
@@ -163,7 +241,7 @@ ok(`Downloaded to ${TMP_ZIP}`);
 
 // Extract ──────────────────────────────────────────────────────────────────────
 info("Extracting…");
-const TMP_DIR = path.join(ROOT, "_x64dbg_extract_tmp");
+const TMP_DIR = path.join(path.dirname(DEST), "_x64dbg_extract_tmp");
 if (fs.existsSync(TMP_DIR)) fs.rmSync(TMP_DIR, { recursive: true });
 fs.mkdirSync(TMP_DIR, { recursive: true });
 

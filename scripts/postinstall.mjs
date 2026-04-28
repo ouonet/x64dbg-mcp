@@ -27,9 +27,40 @@ import {
 // When installed globally:        __dirname = <global>/node_modules/x64dbg-mcp/scripts
 const PKG_ROOT  = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-// .env lives in the consuming project root (global: PKG_ROOT itself)
-const PROJECT_ROOT = process.env.INIT_CWD || PKG_ROOT;
-const ENV_FILE = path.join(PROJECT_ROOT, ".env");
+// Detect whether we're running inside the source repo (dev install) or as a
+// dependency / global install.  When the user runs `npm install` inside the
+// cloned repo, INIT_CWD equals PKG_ROOT.  When installed elsewhere, they differ.
+const isDevInstall = !process.env.INIT_CWD ||
+  path.resolve(process.env.INIT_CWD) === path.resolve(PKG_ROOT);
+
+// Returns the right command string depending on install context.
+// Dev install → `npm run <script>`, dependency/global → `x64dbg-mcp <sub>`
+function cmd(npmScript, subcommand) {
+  return isDevInstall ? `npm run ${npmScript}` : `x64dbg-mcp ${subcommand}`;
+}
+
+/**
+ * Resolve where .env should be read from / written to.
+ *
+ * Priority:
+ *  1. X64DBG_MCP_CONFIG env var  (explicit override)
+ *  2. INIT_CWD/.env              (during npm install lifecycle: local project)
+ *  3. %APPDATA%\x64dbg-mcp\.env (global install on Windows)
+ *  4. PKG_ROOT/.env              (dev / fallback)
+ */
+function resolveEnvFile() {
+  if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
+  if (process.env.INIT_CWD) return path.join(process.env.INIT_CWD, ".env");
+  const appData = process.env.APPDATA;
+  if (appData) {
+    const dir = path.join(appData, "x64dbg-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, ".env");
+  }
+  return path.join(PKG_ROOT, ".env");
+}
+
+const ENV_FILE = resolveEnvFile();
 
 const isTTY = process.stdout.isTTY;
 const c = {
@@ -255,14 +286,13 @@ if (createdBridgeAuthToken) {
 // 5. Summary ──────────────────────────────────────────────────────────────────
 log(`
 ${c.bold}Next steps:${c.rst}
-  1. Start x64dbg — the loader plugin auto-starts the Python bridge.
-  2. Configure your AI assistant (Claude Desktop, Cursor, Windsurf …):
+  1. Run ${c.bold}${cmd("setup", "setup")}${c.rst} to configure paths interactively (or edit ${ENV_FILE} directly).
+  2. Run ${c.bold}${cmd("doctor", "doctor")}${c.rst} to verify the full setup.
+  3. Start x64dbg — the loader plugin auto-starts the Python bridge.
+  4. Configure your AI assistant (Claude Desktop, Cursor, Windsurf …):
      {
        "mcpServers": {
-         "x64dbg": { "command": "node", "args": ["${
-           path.join(PKG_ROOT, "dist", "server.js").replace(/\\/g, "\\\\")
-         }"] }
+         "x64dbg": { "command": "x64dbg-mcp" }
        }
      }
-  3. Run ${c.bold}npm run doctor${c.rst} to verify the full setup.
 `);

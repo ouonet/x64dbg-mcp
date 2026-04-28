@@ -8,12 +8,37 @@ import path from "path";
 import { fileURLToPath } from "url";
 import type { ServerConfig } from "./types.js";
 
-dotenv.config();
-
 const BRIDGE_AUTH_TOKEN_FILE = "x64dbg_mcp_bridge.token";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Resolve the .env file to load, in priority order:
+ *  1. X64DBG_MCP_CONFIG env var (explicit override)
+ *  2. process.cwd()/.env  (local project install)
+ *  3. %APPDATA%\x64dbg-mcp\.env  (global install, Windows)
+ *  4. <pkg-root>/.env  (dev / bundled)
+ */
+function resolveEnvFile(): string {
+  if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
+
+  const cwdEnv = path.join(process.cwd(), ".env");
+  if (fs.existsSync(cwdEnv)) return cwdEnv;
+
+  const appData = process.env.APPDATA;
+  if (appData) {
+    const appdataEnv = path.join(appData, "x64dbg-mcp", ".env");
+    if (fs.existsSync(appdataEnv)) return appdataEnv;
+  }
+
+  const pkgEnv = path.resolve(__dirname, "..", ".env");
+  if (fs.existsSync(pkgEnv)) return pkgEnv;
+
+  return cwdEnv;
+}
+
+dotenv.config({ path: resolveEnvFile() });
 
 function normalizeX64dbgPath(candidate: string): string {
   const resolved = path.resolve(candidate);
@@ -76,13 +101,10 @@ export function loadConfig(): ServerConfig {
   const x64dbgPath = resolveX64dbgPath();
   const bridgeAuthToken = resolveBridgeAuthToken(x64dbgPath);
 
-  if (!bridgeAuthToken) {
-    throw new Error(
-      "BRIDGE_AUTH_TOKEN is not configured. " +
-        "Run \"npm run setup\" (or postinstall) to generate one, " +
-        "then copy it to your .env file."
-    );
-  }
+  // bridgeAuthToken may be empty at load time — the bridge will reject
+  // unauthenticated connections with a clear error when a tool is first used.
+  // This allows `x64dbg-mcp setup` / `x64dbg-mcp doctor` to run without a
+  // fully configured .env.
 
   return {
     x64dbgPath,

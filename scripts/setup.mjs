@@ -14,6 +14,7 @@
  * Then prints what to do next (install plugin, verify with doctor).
  */
 
+import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import readline from "readline";
@@ -21,8 +22,40 @@ import { fileURLToPath } from "url";
 import { ensureBridgeAuthToken } from "./bridge-auth.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const ENV_FILE = path.join(ROOT, ".env");
 const ENV_EXAMPLE = path.join(ROOT, ".env.example");
+
+// Detect dev (source repo) vs dependency/global install
+const isDevInstall = !process.env.INIT_CWD ||
+  path.resolve(process.env.INIT_CWD) === path.resolve(ROOT);
+
+/** Returns the right command depending on install context. */
+function cmd(npmScript, subcommand) {
+  return isDevInstall ? `npm run ${npmScript}` : `x64dbg-mcp ${subcommand}`;
+}
+
+/**
+ * Resolve where .env should be read from / written to.
+ *
+ * Priority:
+ *  1. X64DBG_MCP_CONFIG env var        (explicit override)
+ *  2. process.cwd()/.env exists        (user is in a local project)
+ *  3. %APPDATA%\x64dbg-mcp\.env       (global install on Windows)
+ *  4. ROOT/.env                         (dev / fallback)
+ */
+function resolveEnvFile() {
+  if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
+  const cwdEnv = path.join(process.cwd(), ".env");
+  if (fs.existsSync(cwdEnv)) return cwdEnv;
+  const appData = process.env.APPDATA;
+  if (appData) {
+    const dir = path.join(appData, "x64dbg-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, ".env");
+  }
+  return path.join(ROOT, ".env");
+}
+
+const ENV_FILE = resolveEnvFile();
 
 const isTTY = process.stdout.isTTY;
 const c = {
@@ -128,10 +161,40 @@ if (candidates.length > 0) {
     x64dbgPath = x64dbgPath || candidates[0];
   }
 } else {
-  warn("Could not auto-detect x64dbg. Common locations: C:\\x64dbg, C:\\Program Files\\x64dbg");
-  const input = await prompt(rl,
-    `Enter x64dbg directory path [${x64dbgPath || "skip"}]: `);
-  if (input.trim()) x64dbgPath = input.trim();
+  // No x64dbg found anywhere. Try to auto-download the bundled snapshot first.
+  // Dev install: download to ROOT/x64dbg. User install: download to %APPDATA%\x64dbg-mcp\x64dbg.
+  const bundledPath = isDevInstall
+    ? path.join(ROOT, "x64dbg")
+    : path.join(process.env.APPDATA || path.join(ROOT, "x64dbg"), "x64dbg-mcp", "x64dbg");
+  if (!fs.existsSync(bundledPath)) {
+    info("x64dbg not found locally. Attempting to download the bundled snapshot…");
+    try {
+      const setupX64 = path.join(ROOT, "scripts", "setup-x64dbg.mjs");
+      const destFlag = isDevInstall ? "" : `--dest ${JSON.stringify(bundledPath)}`;
+      execSync(`node ${JSON.stringify(setupX64)} ${destFlag}`.trim(),
+        { stdio: "inherit", cwd: ROOT });
+    } catch {
+      warn("Download failed. You can retry later with: x64dbg-mcp setup");
+    }
+  }
+
+  // Re-check after potential download
+  if (fs.existsSync(bundledPath)) {
+    x64dbgPath = bundledPath;
+    ok(`Using bundled x64dbg: ${bundledPath}`);
+    const customize = await prompt(rl,
+      `Use a different x64dbg path? [y/N]: `);
+    if (customize.trim().toLowerCase() === "y") {
+      x64dbgPath = (await prompt(rl, "Enter x64dbg directory path: ")).trim() || bundledPath;
+    }
+  } else {
+    warn("Could not auto-detect x64dbg. Common locations: C:\\x64dbg, C:\\Program Files\\x64dbg");
+    const defaultInput = isDevInstall ? (x64dbgPath || "skip") : bundledPath;
+    const input = await prompt(rl,
+      `Enter x64dbg directory path [${defaultInput}]: `);
+    if (input.trim()) x64dbgPath = input.trim();
+    else if (!isDevInstall) x64dbgPath = bundledPath;
+  }
 }
 
 if (x64dbgPath && !fs.existsSync(x64dbgPath)) {
@@ -181,21 +244,24 @@ log(`
 ${c.bold}Next steps:${c.rst}
 
   1. ${c.info}Build & deploy the bridge plugin${c.rst}
-     npm run install-plugin
+     ${cmd("install-plugin", "install-plugin")}
 
   2. ${c.info}Verify everything is in order${c.rst}
-     npm run doctor
+     ${cmd("doctor", "doctor")}
 
   3. ${c.info}Start x64dbg, then start the MCP server${c.rst}
-     npm start
+     ${isDevInstall ? "npm run dev" : "x64dbg-mcp"}
 
   4. ${c.info}Configure your AI assistant${c.rst} (e.g. Claude Desktop mcp.json):
-     {
+${isDevInstall
+  ? `     {
        "mcpServers": {
-         "x64dbg": {
-           "command": "node",
-           "args": ["${path.join(ROOT, "dist", "server.js").replace(/\\/g, "\\\\")}"]
-         }
+         "x64dbg": { "command": "node", "args": ["${path.join(ROOT, "dist", "server.js").replace(/\\/g, "\\\\")}"] }
        }
-     }
+     }`
+  : `     {
+       "mcpServers": {
+         "x64dbg": { "command": "x64dbg-mcp" }
+       }
+     }`}
 `);

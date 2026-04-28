@@ -94,11 +94,12 @@ npm install -g x64dbg-mcp
 | Python       | Detects Python install dir, sets `PYTHON_HOME_X64` / `PYTHON_HOME_X86`                  |
 | `.env`     | Creates with all detected settings and defaults                                             |
 
-After install, only two manual steps remain:
-
 ```bash
-npm run doctor        # verify everything is in order
-# then configure your AI client (see Usage section)
+npm install -g x64dbg-mcp
+x64dbg-mcp setup          # interactive config wizard
+x64dbg-mcp install-plugin # compile C loader, deploy to x64dbg
+x64dbg-mcp doctor         # verify everything is in order
+x64dbg-mcp                # start MCP server
 ```
 
 ### From source
@@ -106,10 +107,10 @@ npm run doctor        # verify everything is in order
 ```bash
 git clone https://github.com/your-org/x64dbg-mcp
 cd x64dbg-mcp
-npm install           # downloads x64dbg, deploys .py files, writes .env
-npm run build         # compile TypeScript → dist/
-npm run install-plugin  # compile C loader (x64+x32), deploy to x64dbg
-npm run doctor        # verify
+npm install             # downloads x64dbg, deploys .py files, writes .env
+npm run build           # compile TypeScript → dist/
+x64dbg-mcp install-plugin  # compile C loader (x64+x32), deploy to x64dbg
+x64dbg-mcp doctor       # verify
 ```
 
 > **x64dbg already installed elsewhere?** Set `X64DBG_PATH` in `.env` before running
@@ -141,7 +142,7 @@ Copy-Item ..\x64dbg_bridge_sdk.py                $p32
 
 ## Configuration
 
-`npm install` creates `.env` automatically. To adjust, edit it directly or run `npm run setup` for an interactive wizard.
+`npm install` creates `.env` automatically. To adjust, edit it directly or run `x64dbg-mcp setup` for an interactive wizard.
 
 ```env
 # x64dbg path (auto-detected)
@@ -289,7 +290,7 @@ npm test
 python plugin/test_bridge.py
 
 # Full environment check
-npm run doctor
+x64dbg-mcp doctor
 ```
 
 CI (`.github/workflows/ci.yml`) runs all three jobs on every push:
@@ -330,8 +331,8 @@ x64dbg-mcp/
 ├── scripts/
 │   ├── postinstall.mjs        # Runs after npm install — downloads x64dbg, deploys plugin, writes .env
 │   ├── setup-x64dbg.mjs       # npm run setup-x64dbg — download/update x64dbg snapshot
-│   ├── setup.mjs              # npm run setup — interactive .env wizard
-│   ├── doctor.mjs             # npm run doctor — pre-flight diagnostics
+│   ├── setup.mjs              # x64dbg-mcp setup — interactive .env wizard
+│   ├── doctor.mjs             # x64dbg-mcp doctor — pre-flight diagnostics
 │   ├── sync-plugin.mjs        # npm run sync-plugin — sync .py to bundled x64dbg (predev hook)
 │   ├── ci.mjs                 # npm run ci — local CI pipeline
 │   └── install-plugin.ps1     # npm run install-plugin — compile C loader & deploy

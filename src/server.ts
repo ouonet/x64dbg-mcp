@@ -4,16 +4,45 @@
  *
  * Exposes x64dbg reverse-engineering and debugging capabilities via
  * the Model Context Protocol over STDIO transport.
+ *
+ * Subcommands (run BEFORE heavy imports so config errors don't block them):
+ *   x64dbg-mcp setup          — interactive configuration wizard
+ *   x64dbg-mcp doctor         — pre-flight diagnostics
+ *   x64dbg-mcp install-plugin — compile C loader & deploy to x64dbg
+ *   x64dbg-mcp                — start MCP server (default)
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { bridge } from "./bridge.js";
-import { sessions } from "./session.js";
-import { logger } from "./logger.js";
-import { config } from "./config.js";
-import { registerAllTools } from "./tools/index.js";
-import { killDebugger } from "./launcher.js";
+import { spawnSync } from "child_process";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const subcommand = process.argv[2];
+if (subcommand === "setup" || subcommand === "doctor" || subcommand === "install-plugin") {
+  const scriptMap: Record<string, string> = {
+    setup: "setup.mjs",
+    doctor: "doctor.mjs",
+    "install-plugin": "install-plugin.mjs",
+  };
+  const scriptPath = path.resolve(__dirname, "..", "scripts", scriptMap[subcommand]);
+  const result = spawnSync(process.execPath, [scriptPath, ...process.argv.slice(3)], {
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
+
+// ── Dynamic imports: only loaded when running as MCP server ────────────────
+// (keeps setup/doctor from failing when .env / BRIDGE_AUTH_TOKEN is missing)
+const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+const { bridge } = await import("./bridge.js");
+const { sessions } = await import("./session.js");
+const { logger } = await import("./logger.js");
+const { config } = await import("./config.js");
+const { registerAllTools } = await import("./tools/index.js");
+const { killDebugger } = await import("./launcher.js");
 
 async function main(): Promise<void> {
   logger.info("x64dbg MCP Server starting …");
@@ -101,6 +130,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error(`Fatal: ${err}`);
+  // logger may not be initialised if config failed to load
+  try { logger.error(`Fatal: ${err}`); } catch { console.error(`Fatal: ${err}`); }
   process.exit(1);
 });

@@ -2,7 +2,8 @@
 /**
  * x64dbg-mcp doctor — pre-flight diagnostics
  *
- * Usage:  npm run doctor
+ * Usage:  x64dbg-mcp doctor
+ *         npm run doctor
  *         node scripts/doctor.mjs
  *
  * Checks every prerequisite and prints a clear pass/fail table.
@@ -18,8 +19,23 @@ import { fileURLToPath } from "url";
 import { BRIDGE_AUTH_TOKEN_FILE } from "./bridge-auth.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const ENV_FILE = path.join(ROOT, ".env");
 
+/**
+ * Resolve .env path (mirrors config.ts / setup.mjs logic).
+ */
+function resolveEnvFile() {
+  if (process.env.X64DBG_MCP_CONFIG) return process.env.X64DBG_MCP_CONFIG;
+  const cwdEnv = path.join(process.cwd(), ".env");
+  if (fs.existsSync(cwdEnv)) return cwdEnv;
+  const appData = process.env.APPDATA;
+  if (appData) {
+    const appdataEnv = path.join(appData, "x64dbg-mcp", ".env");
+    if (fs.existsSync(appdataEnv)) return appdataEnv;
+  }
+  return path.join(ROOT, ".env");
+}
+
+const ENV_FILE = resolveEnvFile();
 dotenv.config({ path: ENV_FILE });
 
 // ── colour helpers ──────────────────────────────────────────────────────────
@@ -225,8 +241,8 @@ if (failures.length === 0 && warnings.length === 0) {
     warnings.forEach((r) => console.log(`  • ${r.label}`));
   }
   if (failures.length > 0) {
-    console.log(`\nRun ${c.bold}npm run setup${c.rst} to fix missing configuration.`);
-    console.log(`Run ${c.bold}npm run install-plugin${c.rst} to deploy the bridge plugin.\n`);
+    console.log(`\nRun ${c.bold}x64dbg-mcp setup${c.rst} to fix missing configuration.`);
+    console.log(`Run ${c.bold}x64dbg-mcp install-plugin${c.rst} to deploy the bridge plugin.\n`);
   }
 }
 console.log();
