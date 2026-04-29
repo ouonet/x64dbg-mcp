@@ -93,12 +93,15 @@ def test_dispatch_log_cap():
 
 
 def test_findall_unquoted():
-    import re
+    # Historical regression: an earlier implementation routed memory.search
+    # through the x64dbg `findall` command and at one point quoted the hex
+    # pattern, breaking searches. The current implementation reads memory
+    # directly via the SDK and does not call `findall` at all, so the only
+    # remaining invariant is that quoted-findall syntax must not reappear.
     src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "x64dbg_mcp_bridge.py")
     src = open(src_path, encoding="utf-8").read()
-    assert re.search(r'findall 0, "', src) is None
-    assert re.search(r"findall 0, \{hex_pattern\}", src)
-    _ok("findall uses unquoted hex pattern")
+    assert 'findall 0, "' not in src, "quoted findall pattern reintroduced"
+    _ok("findall is not invoked with a quoted hex pattern")
 
 
 def test_get_imports_address_empty_string():
@@ -186,12 +189,12 @@ _tests = [
 ]
 
 if __name__ == "__main__":
-    print(f"\nx64dbg_mcp_bridge offline tests\n{'─' * 40}")
+    print(f"\nx64dbg_mcp_bridge offline tests\n{'-' * 40}")
     for fn in _tests:
         try:
             fn()
         except Exception as exc:
             _fail(fn.__name__, str(exc))
-    print(f"\n{'─' * 40}")
+    print(f"\n{'-' * 40}")
     print(f"Results: {_passed} passed, {_failed} failed")
     sys.exit(0 if _failed == 0 else 1)
