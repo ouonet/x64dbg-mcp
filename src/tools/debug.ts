@@ -199,6 +199,73 @@ export function registerDebugTools(server: McpServer): void {
     }
   );
 
+  // ── Pause execution ───────────────────────────────────────────────────
+
+  server.tool(
+    "pause_execution",
+    "Pause a running debuggee. Issues an asynchronous break and waits for " +
+      "the debuggee to actually stop. " +
+      "REQUIRES: an active session (state 'running' or 'paused'). " +
+      "If the session is already paused, this is a no-op and returns the current address. " +
+      "Returns stopReason ('paused' or 'exited') and the address where execution stopped.",
+    {
+      sessionId: z.string().describe("Session ID from load_executable"),
+    },
+    async ({ sessionId }) => {
+      const session = sessions.get(sessionId);
+      if (!session) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: Unknown sessionId: ${sessionId}. Call load_executable first.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (session.state === "terminated") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: Session ${sessionId} has already terminated.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const result = await bridge.call<{
+          reason: string;
+          address: string;
+        }>("debug.pause", { sessionId });
+
+        sessions.updateState(sessionId, result.reason === "exited" ? "terminated" : "paused");
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  sessionId,
+                  stopReason: result.reason,
+                  currentAddress: result.address,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // ── Step into ─────────────────────────────────────────────────────────
 
   server.tool(

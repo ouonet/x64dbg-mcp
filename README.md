@@ -25,10 +25,10 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - Launches the correct debugger variant (`x32dbg` or `x64dbg`) with the target executable
 - Waits for the bridge plugin TCP port to become reachable, then connects — **zero manual setup**
 
-### Core Debugging (15 tools)
+### Core Debugging (16 tools)
 
 - `load_executable` — Load PE file, **auto-detect x86/x64, auto-launch debugger**, break on entry
-- `continue_execution` / `step_into` / `step_over` / `step_out`
+- `continue_execution` / `pause_execution` / `step_into` / `step_over` / `step_out`
 - `run_to_address` — Run until a specific address
 - `set_breakpoint` — Software, hardware (execute/read/write/access), and memory BPs with conditions and log text
 - `remove_breakpoint` / `list_breakpoints`
@@ -65,7 +65,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - `check_section_anomalies` — W+X sections, unusual names, zero raw-size, high entropy detection
 - `generate_security_report` — Consolidated first-pass triage of all security checks with overall risk level
 
-**Total: 39 tools**
+**Total: 40 tools**
 
 ## Prerequisites
 

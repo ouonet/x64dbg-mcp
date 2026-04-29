@@ -604,6 +604,23 @@ def handle_debug_continue(params: dict) -> dict:
     }
 
 
+@handler("debug.pause")
+def handle_debug_pause(params: dict) -> dict:
+    """Pause a running debuggee. Idempotent: if already paused, returns current state."""
+    _require_x64dbg()
+    if not sdk.DbgIsDebugging():
+        raise RuntimeError("No active debug session to pause.")
+    if sdk.DbgIsRunning():
+        sdk.DbgCmdExec("pause")
+        _wait_for_stop(timeout=10.0)
+    if sdk.DbgIsRunning():
+        raise RuntimeError("Debuggee did not stop within 10s after pause command.")
+    if not sdk.DbgIsDebugging():
+        return {"reason": "exited", "address": "0x0"}
+    rip = _eval_expr("cip")
+    return {"reason": "paused", "address": _hex(rip)}
+
+
 @handler("debug.stepInto")
 def handle_debug_step_into(params: dict) -> dict:
     _require_x64dbg()
