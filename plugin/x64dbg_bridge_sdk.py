@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import os
+import struct
 import sys
 from ctypes import (
     POINTER, Structure, byref, c_bool, c_char, c_char_p, c_int,
@@ -20,6 +21,13 @@ from ctypes import (
     create_string_buffer, windll,
 )
 from typing import Optional
+
+try:
+    from iced_x86 import Decoder as IcedDecoder, Formatter as IcedFormatter, FormatterSyntax
+except Exception:
+    IcedDecoder = None  # type: ignore[assignment]
+    IcedFormatter = None  # type: ignore[assignment]
+    FormatterSyntax = None  # type: ignore[assignment]
 
 # ── Pointer-size detection ────────────────────────────────────────────────
 
@@ -78,13 +86,22 @@ MAX_MNEMONIC_SIZE = 64
 MAX_PATH_SIZE = 260
 MAX_BREAKPOINT_SIZE = 256
 MAX_SECTION_SIZE = 10
+MAX_MODULE_NAME32 = 255
+MAX_THREAD_NAME_SIZE = 256
+MAX_CONDITIONAL_EXPR_SIZE = 256
+MAX_CONDITIONAL_TEXT_SIZE = 256
 
-# Breakpoint types
-bp_normal = 0
-bp_hardware = 1
-bp_memory = 2
-bp_dll = 3
-bp_exception = 4
+TH32CS_SNAPMODULE = 0x00000008
+TH32CS_SNAPMODULE32 = 0x00000010
+INVALID_HANDLE_VALUE = c_void_p(-1).value
+
+# Breakpoint types (BPXTYPE enum)
+bp_none = 0
+bp_normal = 1
+bp_hardware = 2
+bp_memory = 4
+bp_dll = 8
+bp_exception = 16
 
 # ── Structures ────────────────────────────────────────────────────────────
 
@@ -100,6 +117,27 @@ class BASIC_INSTRUCTION_INFO(Structure):
     ]
 
 
+class DISASM_ARG(Structure):
+    _fields_ = [
+        ("type", c_int),
+        ("segment", c_int),
+        ("mnemonic", c_char * MAX_MNEMONIC_SIZE),
+        ("constant", duint),
+        ("value", duint),
+        ("memvalue", duint),
+    ]
+
+
+class DISASM_INSTR(Structure):
+    _fields_ = [
+        ("instruction", c_char * MAX_MNEMONIC_SIZE),
+        ("type", c_int),
+        ("argcount", c_int),
+        ("instr_size", c_int),
+        ("arg", DISASM_ARG * 3),
+    ]
+
+
 class BRIDGEBP(Structure):
     _fields_ = [
         ("type", c_int),
@@ -109,11 +147,21 @@ class BRIDGEBP(Structure):
         ("active", c_bool),
         ("name", c_char * MAX_BREAKPOINT_SIZE),
         ("mod", c_char * MAX_MODULE_SIZE),
+        ("slot", ctypes.c_ushort),
+        ("typeEx", c_ubyte),
+        ("hwSize", c_ubyte),
         ("hitCount", c_uint),
+        ("fastResume", c_bool),
+        ("silent", c_bool),
+        ("breakCondition", c_char * MAX_CONDITIONAL_EXPR_SIZE),
+        ("logText", c_char * MAX_CONDITIONAL_TEXT_SIZE),
+        ("logCondition", c_char * MAX_CONDITIONAL_EXPR_SIZE),
+        ("commandText", c_char * MAX_CONDITIONAL_TEXT_SIZE),
+        ("commandCondition", c_char * MAX_CONDITIONAL_EXPR_SIZE),
     ]
 
 
-class BRIDGEBPLIST(Structure):
+class BPMAP(Structure):
     _fields_ = [
         ("count", c_int),
         ("bp", POINTER(BRIDGEBP)),
@@ -123,17 +171,33 @@ class BRIDGEBPLIST(Structure):
 class THREADINFO(Structure):
     _fields_ = [
         ("ThreadNumber", c_int),
-        ("ThreadId", duint),
+        ("Handle", wt.HANDLE),
+        ("ThreadId", wt.DWORD),
         ("ThreadStartAddress", duint),
         ("ThreadLocalBase", duint),
-        ("threadName", c_char * MAX_STRING_SIZE),
+        ("threadName", c_char * MAX_THREAD_NAME_SIZE),
+    ]
+
+
+class THREADALLINFO(Structure):
+    _fields_ = [
+        ("BasicInfo", THREADINFO),
+        ("ThreadCip", duint),
+        ("SuspendCount", wt.DWORD),
+        ("Priority", c_int),
+        ("WaitReason", c_int),
+        ("LastError", wt.DWORD),
+        ("UserTime", wt.FILETIME),
+        ("KernelTime", wt.FILETIME),
+        ("CreationTime", wt.FILETIME),
+        ("Cycles", ctypes.c_uint64),
     ]
 
 
 class THREADLIST(Structure):
     _fields_ = [
         ("count", c_int),
-        ("list", POINTER(THREADINFO)),
+        ("list", POINTER(THREADALLINFO)),
         ("CurrentThread", c_int),
     ]
 
@@ -180,6 +244,21 @@ class MODLIST(Structure):
     ]
 
 
+class MODULEENTRY32W(Structure):
+    _fields_ = [
+        ("dwSize", wt.DWORD),
+        ("th32ModuleID", wt.DWORD),
+        ("th32ProcessID", wt.DWORD),
+        ("GlblcntUsage", wt.DWORD),
+        ("ProccntUsage", wt.DWORD),
+        ("modBaseAddr", c_void_p),
+        ("modBaseSize", wt.DWORD),
+        ("hModule", wt.HMODULE),
+        ("szModule", wt.WCHAR * (MAX_MODULE_NAME32 + 1)),
+        ("szExePath", wt.WCHAR * wt.MAX_PATH),
+    ]
+
+
 class STACK_ENTRY(Structure):
     _fields_ = [
         ("addr", duint),
@@ -193,6 +272,30 @@ class CALLSTACK(Structure):
     _fields_ = [
         ("total", c_int),
         ("entries", POINTER(STACK_ENTRY)),
+    ]
+
+
+class DBGFUNCTIONS_PARTIAL(Structure):
+    _fields_ = [
+        ("AssembleAtEx", c_void_p),
+        ("SectionFromAddr", c_void_p),
+        ("ModNameFromAddr", c_void_p),
+        ("ModBaseFromAddr", c_void_p),
+        ("ModBaseFromName", c_void_p),
+        ("ModSizeFromAddr", c_void_p),
+        ("Assemble", c_void_p),
+        ("PatchGet", c_void_p),
+        ("PatchInRange", c_void_p),
+        ("MemPatch", c_void_p),
+        ("PatchRestoreRange", c_void_p),
+        ("PatchEnum", c_void_p),
+        ("PatchRestore", c_void_p),
+        ("PatchFile", c_void_p),
+        ("ModPathFromAddr", c_void_p),
+        ("ModPathFromName", c_void_p),
+        ("DisasmFast", c_void_p),
+        ("MemUpdateMap", c_void_p),
+        ("GetCallStack", c_void_p),
     ]
 
 
@@ -310,26 +413,48 @@ def DbgIsRunning() -> bool:
 
 def DbgDisasmAt(addr: int) -> dict:
     """Disassemble one instruction at addr."""
-    info = BASIC_INSTRUCTION_INFO()
-    buf = create_string_buffer(MAX_STRING_SIZE)
+    if IcedDecoder is not None and IcedFormatter is not None and FormatterSyntax is not None:
+        data = read_memory(addr, 16)
+        decoder = IcedDecoder(64 if IS_64BIT else 32, data, ip=addr)
+        instr = decoder.decode()
+        formatter = IcedFormatter(FormatterSyntax.INTEL)
+        disasm_text = formatter.format(instr).strip()
+        parts = disasm_text.split(None, 1)
+        mnemonic = parts[0] if parts else ""
+        operands = parts[1] if len(parts) > 1 else ""
+        return {
+            "addr": addr,
+            "size": instr.len if instr.len > 0 else 1,
+            "mnemonic": mnemonic,
+            "operands": operands,
+            "is_call": mnemonic.startswith("call"),
+            "is_branch": mnemonic.startswith("j") or mnemonic in {"call", "ret", "iret", "syscall", "sysret"},
+        }
 
-    fn = _b().DbgDisasmFastAt
-    fn.argtypes = [duint, POINTER(BASIC_INSTRUCTION_INFO), c_char_p]
-    fn.restype = c_int  # Win32 BOOL
-    fn(duint(addr), byref(info), buf)
+    basic = BASIC_INSTRUCTION_INFO()
+    fn_fast = _b().DbgDisasmFastAt
+    fn_fast.argtypes = [duint, POINTER(BASIC_INSTRUCTION_INFO)]
+    fn_fast.restype = None
+    fn_fast(duint(addr), byref(basic))
 
-    disasm_text = buf.value.decode("utf-8", errors="replace").strip()
+    instr = DISASM_INSTR()
+    fn_full = _b().DbgDisasmAt
+    fn_full.argtypes = [duint, POINTER(DISASM_INSTR)]
+    fn_full.restype = None
+    fn_full(duint(addr), byref(instr))
+
+    disasm_text = bytes(instr.instruction).split(b"\x00", 1)[0].decode("utf-8", errors="replace").strip()
     parts = disasm_text.split(None, 1)
     mnemonic = parts[0] if parts else ""
     operands = parts[1] if len(parts) > 1 else ""
 
     return {
         "addr": addr,
-        "size": info.size if info.size > 0 else 1,
+        "size": instr.instr_size if instr.instr_size > 0 else (basic.size if basic.size > 0 else 1),
         "mnemonic": mnemonic,
         "operands": operands,
-        "is_call": bool(info.call),
-        "is_branch": bool(info.branch),
+        "is_call": bool(basic.call),
+        "is_branch": bool(basic.branch),
     }
 
 
@@ -378,110 +503,121 @@ def get_ptr_size() -> int:
     return PTR_SIZE
 
 
+def _get_process_id() -> int:
+    h_process = _get_process_handle()
+    if not h_process:
+        raise RuntimeError("No process handle — is a process being debugged?")
+
+    fn = windll.kernel32.GetProcessId
+    fn.argtypes = [c_void_p]
+    fn.restype = wt.DWORD
+    pid = int(fn(c_void_p(h_process)))
+    if not pid:
+        err = windll.kernel32.GetLastError()
+        raise RuntimeError(f"GetProcessId failed: error {err}")
+    return pid
+
+
+def _get_entrypoint_from_disk(file_path: str, module_base: int) -> int:
+    try:
+        with open(file_path, "rb") as fh:
+            header = fh.read(4096)
+    except OSError:
+        return 0
+
+    if len(header) < 0x40 or header[:2] != b"MZ":
+        return 0
+
+    try:
+        pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
+        if pe_offset + 0x2C > len(header) or header[pe_offset:pe_offset + 4] != b"PE\x00\x00":
+            return 0
+        opt_start = pe_offset + 24
+        entry_rva = struct.unpack_from("<I", header, opt_start + 16)[0]
+        return module_base + entry_rva if entry_rva else 0
+    except struct.error:
+        return 0
+
+
 def get_module_list() -> list[dict]:
-    """Get list of loaded modules.
+    """Get list of loaded modules using Windows Toolhelp APIs.
 
-    Primary: try DbgGetModuleList (available in newer x64bridge builds).
-    Fallback: use DbgMemMap to enumerate memory regions, then extract
-    IMAGE-type regions and get module info via DbgGetModuleAt.
+    This avoids DbgGetModuleList/DbgMemMap ctypes calls, which can destabilize
+    the 32-bit bridge on some targets during early loader states.
     """
-    # --- Try native API first ---
+    pid = _get_process_id()
+
+    create_snapshot = windll.kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = [wt.DWORD, wt.DWORD]
+    create_snapshot.restype = c_void_p
+
+    module_first = windll.kernel32.Module32FirstW
+    module_first.argtypes = [c_void_p, POINTER(MODULEENTRY32W)]
+    module_first.restype = c_int
+
+    module_next = windll.kernel32.Module32NextW
+    module_next.argtypes = [c_void_p, POINTER(MODULEENTRY32W)]
+    module_next.restype = c_int
+
+    close_handle = windll.kernel32.CloseHandle
+    close_handle.argtypes = [c_void_p]
+    close_handle.restype = c_int
+
+    snapshot = create_snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
+    if snapshot == INVALID_HANDLE_VALUE:
+        err = windll.kernel32.GetLastError()
+        raise RuntimeError(f"CreateToolhelp32Snapshot failed: error {err}")
+
+    result = []
     try:
-        fn = _b().DbgGetModuleList
-    except AttributeError:
-        fn = None
+        entry = MODULEENTRY32W()
+        entry.dwSize = ctypes.sizeof(MODULEENTRY32W)
+        ok = module_first(snapshot, byref(entry))
+        while ok:
+            base = cast(entry.modBaseAddr, c_void_p).value or 0
+            path = entry.szExePath
+            result.append({
+                "name": entry.szModule,
+                "base": base,
+                "size": int(entry.modBaseSize),
+                "entry": _get_entrypoint_from_disk(path, base) if path else 0,
+                "path": path,
+            })
+            ok = module_next(snapshot, byref(entry))
+    finally:
+        close_handle(snapshot)
 
-    if fn is not None:
-        try:
-            mod_list = MODLIST()
-            fn.argtypes = [POINTER(MODLIST)]
-            fn.restype = c_int  # Win32 BOOL
-            ok = fn(byref(mod_list))
-            if ok and mod_list.count > 0:
-                result = []
-                for i in range(mod_list.count):
-                    m = mod_list.mod[i]
-                    result.append({
-                        "name": m.name.decode("utf-8", errors="replace"),
-                        "base": m.base,
-                        "size": m.size,
-                        "entry": m.entry,
-                        "path": m.path.decode("utf-8", errors="replace"),
-                    })
-                if mod_list.mod:
-                    _b().BridgeFree(mod_list.mod)
-                return result
-        except Exception:
-            pass
-
-    # --- Fallback: use DbgMemMap + MEMPAGE info ---
-    # DbgMemMap fills a MEMMAP structure with MEMPAGE entries
-    try:
-        mem_map = MEMMAP()
-        fn = _b().DbgMemMap
-        fn.argtypes = [POINTER(MEMMAP)]
-        fn.restype = c_int  # Win32 BOOL
-        ok = fn(byref(mem_map))
-        if ok and mem_map.count > 0:
-            seen_bases: set[int] = set()
-            result = []
-            for i in range(mem_map.count):
-                p = mem_map.page[i]
-                base = p.BaseAddress
-                size = p.RegionSize
-                mod_name = p.info.decode("utf-8", errors="replace").strip("\x00")
-                # Only consider image regions with a module name
-                if base in seen_bases or base == 0:
-                    continue
-                if not mod_name:
-                    # Try DbgGetModuleAt as fallback
-                    mod_name = get_module_at(base)
-                if mod_name:
-                    seen_bases.add(base)
-                    entry_addr = 0
-                    try:
-                        entry_addr = _eval_expr_bridge(f"{mod_name}:0")
-                    except Exception:
-                        pass
-                    result.append({
-                        "name": mod_name,
-                        "base": base,
-                        "size": size,
-                        "entry": entry_addr,
-                        "path": "",
-                    })
-            if mem_map.page:
-                _b().BridgeFree(mem_map.page)
-            return result
-    except Exception:
-        pass
-
-    # --- Last resort: use x64dbg command-based approach ---
-    return []
+    return result
 
 
 def get_breakpoint_list() -> list[dict]:
     """Get all breakpoints."""
-    bp_list = BRIDGEBPLIST()
     fn = _b().DbgGetBpList
-    fn.argtypes = [c_int, POINTER(BRIDGEBPLIST)]
+    fn.argtypes = [c_int, POINTER(BPMAP)]
     fn.restype = c_int  # Win32 BOOL
-    fn(bp_normal, byref(bp_list))
-
     result = []
-    for i in range(bp_list.count):
-        bp = bp_list.bp[i]
-        result.append({
-            "address": bp.addr,
-            "type": bp.type,
-            "enabled": bp.enabled,
-            "hitCount": bp.hitCount,
-            "name": bp.name.decode("utf-8", errors="replace"),
-            "module": bp.mod.decode("utf-8", errors="replace"),
-        })
+    seen: set[tuple[int, int]] = set()
 
-    if bp_list.bp:
-        _b().BridgeFree(bp_list.bp)
+    for bp_type in (bp_normal, bp_hardware, bp_memory, bp_dll, bp_exception):
+        bp_list = BPMAP()
+        fn(bp_type, byref(bp_list))
+        for i in range(bp_list.count):
+            bp = bp_list.bp[i]
+            key = (int(bp.addr), int(bp.type))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({
+                "address": bp.addr,
+                "type": bp.type,
+                "enabled": bp.enabled,
+                "hitCount": bp.hitCount,
+                "name": bp.name.decode("utf-8", errors="replace"),
+                "module": bp.mod.decode("utf-8", errors="replace"),
+            })
+
+        if bp_list.bp:
+            _b().BridgeFree(bp_list.bp)
 
     return result
 
@@ -489,10 +625,14 @@ def get_breakpoint_list() -> list[dict]:
 def get_callstack() -> list[dict]:
     """Get current thread callstack."""
     cs = CALLSTACK()
-    fn = _b().DbgGetCallStack
-    fn.argtypes = [POINTER(CALLSTACK)]
-    fn.restype = c_int  # Win32 BOOL
-    fn(byref(cs))
+    fn = _b().DbgFunctions
+    fn.restype = POINTER(DBGFUNCTIONS_PARTIAL)
+    dbgfuncs = fn()
+    if not dbgfuncs or not dbgfuncs.contents.GetCallStack:
+        raise RuntimeError("DbgFunctions()->GetCallStack unavailable")
+
+    get_call_stack = ctypes.CFUNCTYPE(None, POINTER(CALLSTACK))(dbgfuncs.contents.GetCallStack)
+    get_call_stack(byref(cs))
 
     result = []
     for i in range(cs.total):
@@ -522,18 +662,26 @@ def get_thread_list() -> dict:
     for i in range(tl.count):
         t = tl.list[i]
         threads.append({
-            "id": t.ThreadId,
-            "number": t.ThreadNumber,
-            "entry": t.ThreadStartAddress,
-            "teb": t.ThreadLocalBase,
-            "name": t.threadName.decode("utf-8", errors="replace"),
+            "id": t.BasicInfo.ThreadId,
+            "number": t.BasicInfo.ThreadNumber,
+            "entry": t.BasicInfo.ThreadStartAddress,
+            "teb": t.BasicInfo.ThreadLocalBase,
+            "name": t.BasicInfo.threadName.decode("utf-8", errors="replace"),
         })
 
     current = tl.CurrentThread
     if tl.list:
         _b().BridgeFree(tl.list)
 
-    return {"threads": threads, "currentThread": current}
+    current_thread_id = 0
+    if 0 <= current < len(threads):
+        current_thread_id = int(threads[current]["id"])
+
+    return {
+        "threads": threads,
+        "currentThread": current,
+        "currentThreadId": current_thread_id,
+    }
 
 
 def get_label_at(addr: int) -> str:

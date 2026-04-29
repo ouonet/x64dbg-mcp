@@ -18,7 +18,9 @@ x64dbg process
 
 1. **x64dbg** (snapshot 2024+ recommended)
 2. **Python 3.10+** installed on the system (python3.dll must be loadable)
-3. **CMake 3.15+** and a C compiler (MSVC or MinGW) to build the loader
+3. **`iced_x86`** Python package — installed automatically by `npm install`; manually:
+   `python -m pip install iced_x86`. The bridge falls back to x64dbg's disasm API if absent.
+4. **CMake 3.15+** and a C compiler (MSVC or MinGW) to build the loader
 
 ## Building the Loader Plugin
 

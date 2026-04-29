@@ -68,8 +68,12 @@ BUFFER_SIZE = 65536
 BRIDGE_AUTH_TOKEN_FILE = "x64dbg_mcp_bridge.token"
 
 
+def _normalize_bridge_token(token: str) -> str:
+    return token.lstrip("\ufeff").strip()
+
+
 def _load_bridge_auth_token() -> str:
-    token = os.environ.get("BRIDGE_AUTH_TOKEN", "").strip()
+    token = _normalize_bridge_token(os.environ.get("BRIDGE_AUTH_TOKEN", ""))
     if token:
         return token
 
@@ -79,7 +83,7 @@ def _load_bridge_auth_token() -> str:
 
     try:
         with open(token_path, "r", encoding="utf-8") as fh:
-            return fh.read().strip()
+            return _normalize_bridge_token(fh.read())
     except OSError:
         return ""
 
@@ -88,31 +92,31 @@ BRIDGE_AUTH_TOKEN = _load_bridge_auth_token()
 
 # Track the last loaded executable path so handlers can resolve PE files from disk
 _loaded_exe_path: Optional[str] = None
+_BRIDGE_LOG_FILE = os.path.join(_plugin_dir, "mcp_bridge_runtime.log")
 
 # ---------------------------------------------------------------------------
 # Logging helper (writes to x64dbg log pane when available)
 # ---------------------------------------------------------------------------
 
+def _write_bridge_log_line(text: str) -> None:
+    try:
+        with open(_BRIDGE_LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    except OSError:
+        pass
+
 def log_info(msg: str) -> None:
     text = f"[MCP Bridge] {msg}"
-    if INSIDE_X64DBG:
-        try:
-            sdk.log_print(text)
-        except Exception:
-            print(text)
-    else:
-        print(text)
+    # Avoid DbgCmdExecDirect-based logging from Python worker threads.
+    # On x32dbg this can destabilize the bridge before requests are handled.
+    print(text, file=sys.stderr, flush=True)
+    _write_bridge_log_line(text)
 
 
 def log_error(msg: str) -> None:
     text = f"[MCP Bridge ERROR] {msg}"
-    if INSIDE_X64DBG:
-        try:
-            sdk.log_print(text)
-        except Exception:
-            print(text)
-    else:
-        print(text)
+    print(text, file=sys.stderr, flush=True)
+    _write_bridge_log_line(text)
 
 # ---------------------------------------------------------------------------
 # Handler registry
@@ -210,6 +214,196 @@ def _entropy(data: bytes) -> float:
             ent -= p * math.log2(p)
     return round(ent, 4)
 
+
+_FALLBACK_FUNCTION_CACHE: dict[tuple[int, int, int], list[dict[str, Any]]] = {}
+
+
+def _find_module_info(mod: Optional[str] = None, addr: Optional[int] = None) -> Optional[dict]:
+    modules = sdk.get_module_list()
+    if addr is not None:
+        for module in modules:
+            base = int(module["base"])
+            size = int(module["size"])
+            if base <= addr < (base + size):
+                return module
+        return None
+
+    if mod:
+        mod_lower = mod.lower()
+        for module in modules:
+            name = module.get("name", "")
+            path = module.get("path", "")
+            base_name = os.path.basename(path or name).lower()
+            module_name = name.lower()
+            if module_name == mod_lower or base_name == mod_lower or module_name.split(".")[0] == mod_lower.split(".")[0]:
+                return module
+        return None
+
+    for module in modules:
+        path = module.get("path", "")
+        if path.lower().endswith(".exe"):
+            return module
+
+    return modules[0] if modules else None
+
+
+def _direct_target_from_operands(operands: str) -> Optional[int]:
+    text = operands.strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if "[" in text or "ptr" in lowered or "," in text:
+        return None
+
+    if lowered in {
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip",
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+        "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip",
+    }:
+        return None
+
+    if lowered.startswith("0x"):
+        with contextlib.suppress(ValueError):
+            return int(lowered, 16)
+
+    if lowered.endswith("h"):
+        hex_part = lowered[:-1]
+        if hex_part and all(ch in "0123456789abcdef" for ch in hex_part):
+            with contextlib.suppress(ValueError):
+                return int(hex_part, 16)
+
+    with contextlib.suppress(Exception):
+        return _eval_expr(text)
+    return None
+
+
+def _analyze_linear_function(start: int, module: dict, max_instructions: int = 4096) -> Optional[dict]:
+    base = int(module["base"])
+    module_end = base + int(module["size"])
+    if not (base <= start < module_end):
+        return None
+
+    cur = start
+    inst_count = 0
+    callees: list[int] = []
+    edges: list[dict[str, Any]] = []
+    tail_target: Optional[int] = None
+
+    while base <= cur < module_end and inst_count < max_instructions:
+        info = sdk.DbgDisasmAt(cur)
+        mnemonic = (info.get("mnemonic") or "").lower()
+        operands = info.get("operands") or ""
+        size = int(info.get("size") or 0) or 1
+        if not mnemonic:
+            break
+        if mnemonic == "int3" and inst_count > 0:
+            break
+
+        inst_addr = cur
+        inst_count += 1
+        cur += size
+
+        if mnemonic.startswith("call") or mnemonic.startswith("j"):
+            target = _direct_target_from_operands(operands)
+            if target is not None:
+                edge_type = "call" if mnemonic.startswith("call") else "jump"
+                edges.append({"from": inst_addr, "to": target, "type": edge_type})
+                if edge_type == "call":
+                    callees.append(target)
+                elif mnemonic == "jmp":
+                    tail_target = target
+
+        if mnemonic.startswith("ret") or mnemonic in {"iret", "sysret", "syscall"}:
+            break
+        if mnemonic == "jmp":
+            break
+
+    if inst_count == 0 or cur <= start:
+        return None
+
+    return {
+        "start": start,
+        "end": cur,
+        "name": sdk.get_label_at(start) or _hex(start),
+        "module": module.get("name", ""),
+        "instructionCount": inst_count,
+        "callees": callees,
+        "edges": edges,
+        "tailTarget": tail_target,
+    }
+
+
+def _get_fallback_functions(module: dict, max_functions: int = 1024) -> list[dict[str, Any]]:
+    key = (int(module["base"]), int(module["size"]), int(module.get("entry", 0) or 0))
+    cached = _FALLBACK_FUNCTION_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    base = int(module["base"])
+    module_end = base + int(module["size"])
+    entry = int(module.get("entry", 0) or 0)
+    queue: list[int] = []
+    queued: set[int] = set()
+    seen: set[int] = set()
+    functions: list[dict[str, Any]] = []
+
+    if base <= entry < module_end:
+        queue.append(entry)
+        queued.add(entry)
+
+    while queue and len(functions) < max_functions:
+        start = queue.pop(0)
+        if start in seen:
+            continue
+        seen.add(start)
+
+        func = _analyze_linear_function(start, module)
+        if func is None:
+            continue
+
+        functions.append(func)
+
+        for target in func["callees"]:
+            if base <= target < module_end and target not in seen and target not in queued:
+                queue.append(target)
+                queued.add(target)
+
+        tail_target = func.get("tailTarget")
+        if isinstance(tail_target, int) and base <= tail_target < module_end and tail_target not in seen and tail_target not in queued:
+            queue.append(tail_target)
+            queued.add(tail_target)
+
+    _FALLBACK_FUNCTION_CACHE[key] = functions
+    return functions
+
+
+def _find_fallback_function(addr: int) -> Optional[dict[str, Any]]:
+    module = _find_module_info(addr=addr)
+    if module is None:
+        return None
+
+    for func in _get_fallback_functions(module):
+        if int(func["start"]) <= addr < int(func["end"]):
+            return func
+
+    return _analyze_linear_function(addr, module)
+
+
+def _find_fallback_callers(addr: int, max_results: int = 50) -> list[int]:
+    module = _find_module_info(addr=addr)
+    if module is None:
+        return []
+
+    callers: list[int] = []
+    for func in _get_fallback_functions(module):
+        for edge in func["edges"]:
+            if int(edge["to"]) == addr:
+                callers.append(int(edge["from"]))
+                if len(callers) >= max_results:
+                    return callers
+    return callers
+
 # ═══════════════════════════════════════════════════════════════════════════
 # HANDLERS — debug.*
 # ═══════════════════════════════════════════════════════════════════════════
@@ -220,18 +414,75 @@ def handle_debug_load(params: dict) -> dict:
     _require_x64dbg()
     exe = params["executablePath"]
     global _loaded_exe_path
-    _loaded_exe_path = exe
+    prev_loaded = _loaded_exe_path  # capture BEFORE mutating
     args = params.get("commandLineArgs", "")
     break_on_entry = params.get("breakOnEntry", True)
     auto_analyze = params.get("autoAnalyze", True)
+    _FALLBACK_FUNCTION_CACHE.clear()
+
+    # If a session is already alive: same path with a real pid → idempotent
+    # return; different path / stuck "half-debugging" state → StopDebug and
+    # reload cleanly.
+    if sdk.DbgIsDebugging():
+        same_path = bool(
+            prev_loaded
+            and os.path.normcase(os.path.abspath(prev_loaded))
+            == os.path.normcase(os.path.abspath(exe))
+        )
+        live_pid = 0
+        try:
+            live_pid = int(_eval_expr("$pid") or 0)
+        except Exception:
+            live_pid = 0
+        if same_path and live_pid > 0:
+            log_info(f"debug.load: {exe} already loaded (pid={live_pid}) — returning existing state")
+            entry = _eval_expr("entry")
+            if not entry:
+                try:
+                    entry = _eval_expr("cip")
+                except Exception:
+                    entry = 0
+            ptr_size = sdk.get_ptr_size()
+            return {
+                "pid": live_pid,
+                "architecture": "x64" if ptr_size == 8 else "x86",
+                "entryPoint": _hex(entry),
+                "modules": [],
+            }
+        log_info(
+            f"debug.load: existing session detected (loaded={prev_loaded!r}, pid={live_pid}); "
+            f"issuing StopDebug before loading {exe}"
+        )
+        sdk.DbgCmdExec("StopDebug")
+        for _ in range(150):  # up to 15 s
+            if not sdk.DbgIsDebugging():
+                break
+            _time.sleep(0.1)
+        if sdk.DbgIsDebugging():
+            if live_pid > 0:
+                # genuine real session that refuses to stop — surface error
+                raise RuntimeError(
+                    "x64dbg refused to stop the previous debug session within 15s. "
+                    "Close the debugger window manually and retry."
+                )
+            # phantom "half-debugging" state with no real pid — proceed anyway,
+            # InitDebug will take over.
+            log_info("debug.load: phantom half-debugging state detected, proceeding with InitDebug")
+        _loaded_exe_path = None
+
+    if not os.path.isfile(exe):
+        raise RuntimeError(f"Target executable not found inside debugger process: {exe}")
 
     cmd_line = f'"{exe}"'
     if args:
         cmd_line += f" {args}"
 
+    log_info(f"debug.load: InitDebug {cmd_line}")
+
     # Use async DbgCmdExec for commands that start/control the debug session
     # to avoid blocking x64dbg's main thread from the Python bridge thread.
-    sdk.DbgCmdExec(f"InitDebug {cmd_line}")
+    if not sdk.DbgCmdExec(f"InitDebug {cmd_line}"):
+        raise RuntimeError(f"DbgCmdExec rejected InitDebug command for: {exe}")
 
     # Wait until x64dbg has started the debug session (up to 15 s)
     for _ in range(150):
@@ -274,17 +525,23 @@ def handle_debug_load(params: dict) -> dict:
     # Gather basic info (safe to call only when debuggee is paused)
     pid = _eval_expr("$pid")
     entry = _eval_expr("entry")
+    if not entry:
+        # x64dbg expression "entry" sometimes resolves to 0 even when paused at OEP;
+        # fall back to the current instruction pointer when we just hit the entry bp.
+        try:
+            entry = _eval_expr("cip")
+        except Exception:
+            entry = 0
 
     # Detect architecture via pointer size
     ptr_size = sdk.get_ptr_size()
     architecture = "x64" if ptr_size == 8 else "x86"
 
-    # List loaded modules (graceful fallback — DbgGetModuleList may be absent)
-    try:
-        modules = _get_module_list()
-    except Exception as _me:
-        log_error(f"get_module_list error: {_me}")
-        modules = []
+    # Module enumeration is deferred to analysis.getModules.
+    # Some x86 targets destabilize x32dbg when queried immediately after load.
+    modules = []
+
+    _loaded_exe_path = exe
 
     result = {
         "pid": pid,
@@ -353,6 +610,7 @@ def handle_debug_step_into(params: dict) -> dict:
     count = params.get("count", 1)
     for _ in range(count):
         _cmd("esti")
+        _wait_for_stop()
     return _current_location()
 
 
@@ -471,6 +729,7 @@ def handle_debug_step_over(params: dict) -> dict:
     count = params.get("count", 1)
     for _ in range(count):
         _cmd("esto")
+        _wait_for_stop()
     return _current_location()
 
 
@@ -486,19 +745,33 @@ def handle_debug_step_out(params: dict) -> dict:
 def handle_debug_run_to(params: dict) -> dict:
     _require_x64dbg()
     addr = params["address"]
-    _cmd(f"bpx {addr}, ss")
-    _cmd("erun")
-    _wait_for_stop()
-    rip = _eval_expr("cip")
-    rip_hex = _hex(rip)
     def _norm(a: str) -> int:
         try:
             return int(str(a), 16)
         except (ValueError, TypeError):
             return -1
-    reached = _norm(rip_hex) == _norm(str(addr))
-    reason = _infer_stop_reason(rip)
-    return {"reached": reached, "stopAddress": rip_hex, "reason": reason}
+
+    target = _norm(str(addr))
+    rip = 0
+    reason = "paused"
+    reached = False
+
+    _cmd(f"bpx {addr}, ss")
+    try:
+        for _ in range(32):
+            _cmd("erun")
+            _wait_for_stop()
+            rip = _eval_expr("cip")
+            reason = _infer_stop_reason(rip)
+            if rip == target:
+                reached = True
+                break
+            if reason == "exited":
+                break
+        return {"reached": reached, "stopAddress": _hex(rip), "reason": reason}
+    finally:
+        with contextlib.suppress(Exception):
+            _cmd(f"bc {addr}")
 
 
 @handler("debug.setBreakpoint")
@@ -626,29 +899,154 @@ def handle_memory_write(params: dict) -> dict:
     return {"address": _hex(addr), "bytesWritten": written}
 
 
+def _select_module_range(mod: Optional[str] = None) -> tuple[int, int]:
+    modules = sdk.get_module_list()
+    if not modules:
+        raise RuntimeError("No modules available")
+
+    if mod:
+        mod_lower = mod.lower()
+        for module in modules:
+            name = module.get("name", "")
+            path = module.get("path", "")
+            base_name = os.path.basename(path or name).lower()
+            module_name = name.lower()
+            if module_name == mod_lower or base_name == mod_lower or module_name.split(".")[0] == mod_lower.split(".")[0]:
+                return int(module["base"]), int(module["size"])
+        raise RuntimeError(f"Module not found: {mod}")
+
+    for module in modules:
+        path = module.get("path", "")
+        if path.lower().endswith(".exe"):
+            return int(module["base"]), int(module["size"])
+
+    first = modules[0]
+    return int(first["base"]), int(first["size"])
+
+
+def _resolve_memory_range(start_expr: Optional[str], end_expr: Optional[str], mod: Optional[str] = None) -> tuple[int, int]:
+    default_start, default_size = _select_module_range(mod)
+    start = _eval_expr(str(start_expr)) if start_expr else default_start
+    end = _eval_expr(str(end_expr)) if end_expr else (default_start + default_size)
+    if end < start:
+        raise RuntimeError(f"Invalid memory range: {_hex(start)}..{_hex(end)}")
+    return start, end
+
+
+def _read_range(address: int, size: int, chunk_size: int = 0x10000) -> bytes:
+    parts: list[bytes] = []
+    offset = 0
+    while offset < size:
+        cur_size = min(chunk_size, size - offset)
+        parts.append(_read_mem(address + offset, cur_size))
+        offset += cur_size
+    return b"".join(parts)
+
+
+def _compile_pattern(pattern: str, search_type: str) -> list[Optional[int]]:
+    if search_type == "ascii":
+        return [b for b in pattern.encode("ascii")]
+    if search_type == "unicode":
+        return [b for b in pattern.encode("utf-16-le")]
+
+    tokens = pattern.strip().split()
+    if len(tokens) == 1 and len(tokens[0]) % 2 == 0 and "?" not in tokens[0]:
+        tokens = [tokens[0][i:i+2] for i in range(0, len(tokens[0]), 2)]
+
+    compiled: list[Optional[int]] = []
+    for token in tokens:
+        if token in {"?", "??"}:
+            compiled.append(None)
+        else:
+            compiled.append(int(token, 16))
+    if not compiled:
+        raise RuntimeError("Empty search pattern")
+    return compiled
+
+
+def _find_pattern_offsets(data: bytes, pattern: list[Optional[int]], max_results: int) -> tuple[int, list[int]]:
+    hits: list[int] = []
+    total = 0
+    plen = len(pattern)
+    limit = len(data) - plen + 1
+    if plen == 0 or limit < 1:
+        return 0, []
+
+    for offset in range(limit):
+        matched = True
+        for idx, expected in enumerate(pattern):
+            if expected is not None and data[offset + idx] != expected:
+                matched = False
+                break
+        if not matched:
+            continue
+        total += 1
+        if len(hits) < max_results:
+            hits.append(offset)
+    return total, hits
+
+
+def _scan_strings(data: bytes, base: int, min_len: int, text_filter: str, max_results: int) -> tuple[int, list[dict]]:
+    strings: list[dict] = []
+    total = 0
+
+    def _push(addr: int, value: str, kind: str) -> None:
+        nonlocal total
+        total += 1
+        if len(strings) >= max_results:
+            return
+        strings.append({
+            "address": _hex(addr),
+            "value": value[:256],
+            "type": kind,
+            "length": len(value),
+        })
+
+    i = 0
+    while i < len(data):
+        if 32 <= data[i] < 127:
+            start = i
+            while i < len(data) and 32 <= data[i] < 127:
+                i += 1
+            value = data[start:i].decode("ascii", errors="ignore")
+            if len(value) >= min_len and (not text_filter or text_filter in value.lower()):
+                _push(base + start, value, "ascii")
+            continue
+        i += 1
+
+    i = 0
+    while i + 1 < len(data):
+        start = i
+        chars: list[str] = []
+        while i + 1 < len(data) and 32 <= data[i] < 127 and data[i + 1] == 0:
+            chars.append(chr(data[i]))
+            i += 2
+        if chars:
+            value = "".join(chars)
+            if len(value) >= min_len and (not text_filter or text_filter in value.lower()):
+                _push(base + start, value, "unicode")
+            continue
+        i += 2
+
+    strings.sort(key=lambda item: int(item["address"], 16))
+    return total, strings
+
+
 @handler("memory.search")
 def handle_memory_search(params: dict) -> dict:
     _require_x64dbg()
     pattern = params["pattern"]
     search_type = params.get("searchType", "hex")
     max_results = params.get("maxResults", 100)
-
-    if search_type == "ascii":
-        hex_pattern = pattern.encode("ascii").hex()
-        hex_pattern = " ".join(hex_pattern[i:i+2] for i in range(0, len(hex_pattern), 2))
-    elif search_type == "unicode":
-        hex_pattern = pattern.encode("utf-16-le").hex()
-        hex_pattern = " ".join(hex_pattern[i:i+2] for i in range(0, len(hex_pattern), 2))
-    else:
-        hex_pattern = pattern
-
-    _cmd(f"findall 0, {hex_pattern}")
-    ref_count = _eval_expr("$result")
+    start, end = _resolve_memory_range(params.get("startAddress"), params.get("endAddress"))
+    compiled = _compile_pattern(pattern, search_type)
+    data = _read_range(start, end - start)
+    ref_count, offsets = _find_pattern_offsets(data, compiled, max_results)
     matches: list[dict] = []
 
-    for i in range(min(ref_count, max_results)):
-        ref_addr = _eval_expr(f"ref.addr({i})")
-        context_data = _read_mem(ref_addr, 32)
+    for offset in offsets:
+        ref_addr = start + offset
+        context_data = data[offset : offset + 32]
         matches.append({
             "address": _hex(ref_addr),
             "context": context_data.hex(),
@@ -810,23 +1208,24 @@ def handle_get_callstack(params: dict) -> dict:
     _require_x64dbg()
     max_frames = params.get("maxFrames", 50)
     stack = sdk.get_callstack()[:max_frames]  # truncate before symbol lookups
+    thread_info = sdk.get_thread_list()
     frames = []
     for i, frame in enumerate(stack):
+        return_addr = frame["to"]
         frames.append({
             "index": i,
-            "address": _hex(frame["address"]),
-            "returnAddress": _hex(frame["to"]),
-            "module": sdk.get_module_at(frame["address"]),
-            "function": sdk.get_label_at(frame["address"]),
+            "address": _hex(return_addr),
+            "returnAddress": _hex(return_addr),
+            "module": sdk.get_module_at(return_addr),
+            "function": sdk.get_label_at(return_addr),
         })
-    return {"threadId": _eval_expr("$tid"), "frames": frames}
+    return {"threadId": thread_info.get("currentThreadId", 0), "frames": frames}
 
 
 @handler("threads.list")
 def handle_threads_list(params: dict) -> dict:
     _require_x64dbg()
     tl = sdk.get_thread_list()
-    tid = _eval_expr("$tid")
     result = []
     for t in tl["threads"]:
         result.append({
@@ -838,7 +1237,7 @@ def handle_threads_list(params: dict) -> dict:
             "priority": "",
             "name": t["name"],
         })
-    return {"activeThreadId": tid, "threads": result}
+    return {"activeThreadId": tl.get("currentThreadId", 0), "threads": result}
 
 
 @handler("threads.switch")
@@ -898,31 +1297,48 @@ def handle_analyze_function(params: dict) -> dict:
     _require_x64dbg()
     addr = _eval_expr(str(params["address"]))
     start, end = sdk.get_function_at(addr)
-    if start == 0 and end == 0:
-        raise RuntimeError(f"No function found at {_hex(addr)}")
-    name = sdk.get_label_at(start) or _hex(start)
-
-    # Walk instructions to find calls
     callees: list[str] = []
     inst_count = 0
-    cur = start
-    while cur < end:
-        info = sdk.DbgDisasmAt(cur)
-        inst_count += 1
-        if info["mnemonic"].startswith("call"):
-            try:
-                target = _eval_expr(info["operands"])
-                callees.append(_hex(target))
-            except Exception:
-                pass
-        cur += info["size"]
+    callers: list[str] = []
 
-    # Get xrefs to this function (callers)
-    _cmd(f"analxrefs {_hex(start)}")
-    ref_count = _eval_expr("$result")
-    callers = []
-    for i in range(min(ref_count, 50)):
-        callers.append(_hex(_eval_expr(f"ref.addr({i})")))
+    if start == 0 and end == 0:
+        fallback = _find_fallback_function(addr)
+        if fallback is None:
+            raise RuntimeError(f"No function found at {_hex(addr)}")
+        start = int(fallback["start"])
+        end = int(fallback["end"])
+        inst_count = int(fallback["instructionCount"])
+        callees = [_hex(int(target)) for target in dict.fromkeys(fallback["callees"])]
+        callers = [_hex(caller) for caller in _find_fallback_callers(start)]
+        name = str(fallback["name"])
+    else:
+        name = sdk.get_label_at(start) or _hex(start)
+        cur = start
+        while cur < end:
+            info = sdk.DbgDisasmAt(cur)
+            inst_count += 1
+            if info["mnemonic"].startswith("call"):
+                target = _direct_target_from_operands(info["operands"])
+                if target is not None:
+                    callees.append(_hex(target))
+            cur += info["size"]
+
+        _cmd(f"analxrefs {_hex(start)}")
+        ref_count = _eval_expr("$result")
+        for i in range(min(ref_count, 50)):
+            callers.append(_hex(_eval_expr(f"ref.addr({i})")))
+        fallback_callers = [_hex(caller) for caller in _find_fallback_callers(start)]
+        if fallback_callers:
+            start_module = sdk.get_module_at(start)
+            same_module_callers = [
+                caller for caller in callers if sdk.get_module_at(int(caller, 16)) == start_module
+            ]
+            if not same_module_callers:
+                callers = fallback_callers
+            else:
+                for caller in fallback_callers:
+                    if caller not in callers:
+                        callers.append(caller)
 
     return {
         "address": _hex(start),
@@ -952,6 +1368,21 @@ def handle_get_xrefs(params: dict) -> dict:
         for i in range(min(cnt, 200)):
             ref = _eval_expr(f"ref.addr({i})")
             xrefs_to.append({"from": _hex(ref), "to": _hex(addr), "type": "unknown"})
+        fallback_to = [
+            {"from": _hex(caller), "to": _hex(addr), "type": "call"}
+            for caller in _find_fallback_callers(addr, max_results=200)
+        ]
+        if fallback_to:
+            target_module = sdk.get_module_at(addr)
+            same_module_to = [
+                item for item in xrefs_to if sdk.get_module_at(int(item["from"], 16)) == target_module
+            ]
+            if not same_module_to:
+                xrefs_to = fallback_to
+            else:
+                for item in fallback_to:
+                    if item not in xrefs_to:
+                        xrefs_to.append(item)
 
     if direction in ("from", "both"):
         _cmd(f"analxrefs {_hex(addr)}, 1")
@@ -959,6 +1390,15 @@ def handle_get_xrefs(params: dict) -> dict:
         for i in range(min(cnt, 200)):
             ref = _eval_expr(f"ref.addr({i})")
             xrefs_from.append({"from": _hex(addr), "to": _hex(ref), "type": "unknown"})
+        if not xrefs_from:
+            func = _find_fallback_function(addr)
+            if func is not None:
+                for edge in func["edges"]:
+                    xrefs_from.append({
+                        "from": _hex(int(edge["from"])),
+                        "to": _hex(int(edge["to"])),
+                        "type": str(edge["type"]),
+                    })
 
     return {"address": _hex(addr), "xrefsTo": xrefs_to, "xrefsFrom": xrefs_from}
 
@@ -968,7 +1408,8 @@ def handle_list_functions(params: dict) -> dict:
     _require_x64dbg()
     # Use x64dbg command to enumerate functions via analysis
     name_filter = (params.get("nameFilter") or "").lower()
-    mod_filter = (params.get("module") or "").lower()
+    module_filter = params.get("module") or ""
+    mod_filter = module_filter.lower()
     offset = params.get("offset", 0)
     limit = params.get("limit", 100)
 
@@ -991,6 +1432,32 @@ def handle_list_functions(params: dict) -> dict:
             "size": fend - fstart if fend > fstart else 0,
             "module": fmod,
         })
+
+    if not filtered:
+        modules: list[dict] = []
+        if module_filter:
+            module = _find_module_info(mod=module_filter)
+            if module is not None:
+                modules.append(module)
+        else:
+            module = _find_module_info()
+            if module is not None:
+                modules.append(module)
+
+        for module in modules:
+            for func in _get_fallback_functions(module):
+                fname = str(func["name"])
+                fmod = str(func["module"])
+                if name_filter and name_filter not in fname.lower():
+                    continue
+                if mod_filter and mod_filter not in fmod.lower():
+                    continue
+                filtered.append({
+                    "address": _hex(int(func["start"])),
+                    "name": fname,
+                    "size": int(func["end"]) - int(func["start"]),
+                    "module": fmod,
+                })
 
     return {"total": len(filtered), "functions": filtered[offset : offset + limit]}
 
@@ -1260,30 +1727,9 @@ def handle_find_strings(params: dict) -> dict:
     text_filter = (params.get("filter") or "").lower()
     min_len = params.get("minLength", 4)
     max_results = params.get("maxResults", 200)
-
-    if mod:
-        _cmd(f"strref {mod}")
-    else:
-        _cmd("strref")
-
-    ref_count = _eval_expr("$result")
-    strings: list[dict] = []
-
-    for i in range(min(ref_count, max_results * 2)):
-        addr = _eval_expr(f"ref.addr({i})")
-        text = sdk.read_string(addr)
-        if len(text) < min_len:
-            continue
-        if text_filter and text_filter not in text.lower():
-            continue
-        strings.append({
-            "address": _hex(addr),
-            "value": text[:256],
-            "type": "ascii",
-            "length": len(text),
-        })
-        if len(strings) >= max_results:
-            break
+    start, end = _resolve_memory_range(None, None, mod)
+    data = _read_range(start, end - start)
+    ref_count, strings = _scan_strings(data, start, min_len, text_filter, max_results)
 
     return {
         "totalFound": ref_count,
@@ -1495,6 +1941,7 @@ def handle_trace(params: dict) -> dict:
                 }
 
         _cmd(step_cmd)
+        _wait_for_stop()
 
         # Check if debuggee terminated
         if not sdk.DbgIsDebugging():
@@ -1843,9 +2290,15 @@ class BridgeServer:
         req_id = req.get("id", "")
         method = req.get("method", "")
         params = req.get("params", {})
-        auth_token = str(req.get("authToken", ""))
+        auth_token = _normalize_bridge_token(str(req.get("authToken", "")))
 
-        if not BRIDGE_AUTH_TOKEN or not hmac.compare_digest(auth_token, BRIDGE_AUTH_TOKEN):
+        if (
+            not BRIDGE_AUTH_TOKEN
+            or not hmac.compare_digest(
+                auth_token.encode("utf-8"),
+                BRIDGE_AUTH_TOKEN.encode("utf-8"),
+            )
+        ):
             return {"id": req_id, "success": False, "error": "Unauthorized bridge request"}
 
         handler_fn = _handlers.get(method)

@@ -37,6 +37,22 @@ function Write-Fail ([string]$msg) { Write-Host "  [FAIL] $msg" -ForegroundColor
 function Write-Info ([string]$msg) { Write-Host "  $msg"        -ForegroundColor Cyan   }
 function Write-Warn ([string]$msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 
+function Write-TextUtf8NoBom([string]$Path, [string[]]$Lines, [switch]$NoNewline) {
+    $directory = Split-Path -Path $Path -Parent
+    if ($directory -and -not (Test-Path $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $content = if ($NoNewline) {
+        [string]::Join("", $Lines)
+    } else {
+        [string]::Join([Environment]::NewLine, $Lines)
+    }
+
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($Path, $content, $encoding)
+}
+
 function Get-EnvFileValue([string]$Path, [string]$Name) {
     if (-not (Test-Path $Path)) { return "" }
     foreach ($line in Get-Content $Path) {
@@ -71,7 +87,7 @@ function Set-EnvFileValue([string]$Path, [string]$Name, [string]$Value) {
         $lines.Add("$Name=$Value")
     }
 
-    Set-Content -Path $Path -Value $lines -Encoding UTF8
+    Write-TextUtf8NoBom -Path $Path -Lines $lines
 }
 
 function New-BridgeAuthToken() {
@@ -197,7 +213,7 @@ foreach ($py in @("x64dbg_mcp_bridge.py", "x64dbg_bridge_sdk.py")) {
     }
 }
 
-Set-Content -Path (Join-Path $pluginsX64 $tokenFileName) -Value $bridgeAuthToken -Encoding UTF8 -NoNewline
+Write-TextUtf8NoBom -Path (Join-Path $pluginsX64 $tokenFileName) -Lines @($bridgeAuthToken) -NoNewline
 Write-Ok "Installed: $(Join-Path $pluginsX64 $tokenFileName)"
 
 # ── install x32 ──────────────────────────────────────────────────────────────
@@ -224,7 +240,7 @@ if (-not $No32) {
         Write-Ok "Installed: $(Join-Path $pluginsX32 $py)"
     }
 
-    Set-Content -Path (Join-Path $pluginsX32 $tokenFileName) -Value $bridgeAuthToken -Encoding UTF8 -NoNewline
+    Write-TextUtf8NoBom -Path (Join-Path $pluginsX32 $tokenFileName) -Lines @($bridgeAuthToken) -NoNewline
     Write-Ok "Installed: $(Join-Path $pluginsX32 $tokenFileName)"
 }
 

@@ -74,6 +74,13 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ executablePath, commandLineArgs, breakOnEntry, autoAnalyze }) => {
       try {
+        // Trim accidental leading/trailing whitespace (and surrounding quotes)
+        // that frequently sneaks in when paths are pasted from terminals or chat UIs.
+        executablePath = executablePath
+          .trim()
+          .replace(/^['"]|['"]$/g, "")
+          .trim();
+
         // Guard: only one active debug session at a time.
         // Sessions in the map are always active — terminated sessions are removed immediately.
         const active = sessions.list()[0];

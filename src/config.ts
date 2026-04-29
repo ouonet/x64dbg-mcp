@@ -77,8 +77,12 @@ function parseEnvInt(value: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+function normalizeBridgeToken(token: string): string {
+  return token.replace(/^\uFEFF/, "").trim();
+}
+
 function resolveBridgeAuthToken(x64dbgPath: string): string {
-  const envToken = process.env.BRIDGE_AUTH_TOKEN?.trim();
+  const envToken = normalizeBridgeToken(process.env.BRIDGE_AUTH_TOKEN || "");
   if (envToken) return envToken;
 
   const tokenCandidates = [
@@ -89,7 +93,7 @@ function resolveBridgeAuthToken(x64dbgPath: string): string {
   for (const tokenPath of tokenCandidates) {
     if (!fs.existsSync(tokenPath)) continue;
 
-    const token = fs.readFileSync(tokenPath, "utf8").trim();
+    const token = normalizeBridgeToken(fs.readFileSync(tokenPath, "utf8"));
     if (token) return token;
   }
 

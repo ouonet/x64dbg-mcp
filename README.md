@@ -71,10 +71,11 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 - **Windows** (x64dbg is Windows-only)
 - **Node.js** ≥ 20
-- **Python 3.10+** installed system-wide
+- **Python 3.10+** installed system-wide (both x64 and x86 builds if you debug 32-bit targets)
 - **CMake 3.15+** + MSVC or MinGW — only needed to build the C loader from source (pre-built binaries are included in the npm package)
 
 > x64dbg itself is **downloaded automatically** by `npm install` if not already present.
+> The `iced_x86` Python package is also installed automatically into each detected Python (`PYTHON_HOME_X64` / `PYTHON_HOME_X86`); the bridge falls back to the x64dbg disasm API if the install fails.
 
 ## Installation
 
@@ -92,6 +93,7 @@ npm install -g x64dbg-mcp
 | Plugin files | Deploys `.dp64` / `.dp32` loader + Python bridge to x64dbg plugins/                     |
 | Bridge auth  | Generates a random `BRIDGE_AUTH_TOKEN` and writes `x64dbg_mcp_bridge.token` to plugins/ |
 | Python       | Detects Python install dir, sets `PYTHON_HOME_X64` / `PYTHON_HOME_X86`                  |
+| iced_x86     | Installs `iced_x86` into each detected Python (skipped if already importable)           |
 | `.env`     | Creates with all detected settings and defaults                                             |
 
 ```bash

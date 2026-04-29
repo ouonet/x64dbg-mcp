@@ -13,7 +13,53 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-04-29
+
+### Fixed
+- `handle_debug_load` no longer falsely returns an idempotent "already loaded" response
+  with `pid=0` on a fresh debugger session. The previous-path comparison now uses
+  `prev_loaded` captured before mutation, the idempotent branch additionally requires
+  `live_pid > 0`, and `_loaded_exe_path` is only updated after `InitDebug` succeeds.
+- `handle_debug_load` no longer raises `"x64dbg refused to stop the previous debug
+  session"` when the debugger is in a phantom "half-debugging" state with no real
+  pid; it now logs and proceeds with `InitDebug`. The hard error is reserved for the
+  case of a genuine live session that ignores `StopDebug`.
+- `debug.load` response `entryPoint` now falls back to the current instruction pointer
+  (`cip`) when `_eval_expr("entry")` returns 0, which happens on some targets even
+  when the debuggee is paused at OEP.
+- `load_executable` MCP handler now trims surrounding whitespace and quote characters
+  from `executablePath`, so paths pasted with leading spaces no longer hit
+  `Target executable not found`.
+
+### Added
+- `selftest.ps1` end-to-end harness that injects `PYTHON_HOME_X86`/`PYTHON_HOME_X64`
+  from `.env`, spawns a fresh `x32dbg.exe`, polls TCP `27042`, exercises `debug.load`
+  twice (cold + idempotent), and verifies the resulting OS process is the expected
+  target.
+
 ### Changed
+- Disassembly in `plugin/x64dbg_bridge_sdk.py::DbgDisasmAt` now uses the `iced_x86`
+  Python package as the primary backend, with x64dbg's native disasm as fallback.
+  `postinstall.mjs` auto-installs `iced_x86` into `PYTHON_HOME_X64` / `PYTHON_HOME_X86`,
+  and `doctor.mjs` reports a warn-level check when it is missing.
+- `get_breakpoint_list` now queries x64dbg per-`BPXTYPE` and dedupes results;
+  the `BPXTYPE` constants are corrected to bit flags (1, 2, 4, 8, 16) instead of
+  0..4. Fixes empty `list_breakpoints` after a successful `set_breakpoint`.
+- `debug.stepInto`, `debug.stepOver`, and `analysis.trace` now wait for the debuggee
+  to actually pause after each step before returning, eliminating stale RIP /
+  duplicated trace samples.
+- `debug.runToAddress` now loops past unrelated pauses (e.g. TLS callback breakpoints)
+  until the temporary target breakpoint is reached, the process exits, or a small
+  pause cap is hit; the temp BP is always cleaned up.
+- `analysis.listFunctions`, `analysis.analyzeFunction`, and `analysis.getXrefs`
+  now fall back to a bridge-side linear disassembly walk from the module entrypoint
+  (caching results per module) when x64dbg's analysis database is empty, and prefer
+  same-module callers when `analxrefs` returns only cross-module noise.
+- `analysis.getModules` switched to Windows Toolhelp32 (`Module32FirstW`/`NextW`)
+  instead of `DbgGetModuleList` to avoid destabilizing the 32-bit bridge during
+  early loader states.
+- `THREADALLINFO` / `BPMAP` / `DBGFUNCTIONS_PARTIAL` ctypes structures realigned to
+  match `bridgemain.h`; `get_thread_list` now returns `currentThreadId`.
 - `plugin/loader/prebuilt/` added to `.gitignore`; compiled `.dp32`/`.dp64` artifacts
   are no longer tracked in git and will be produced by CI as release artifacts.
 - `package.json` `files` list is now explicit (individual scripts) instead of the

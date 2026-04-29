@@ -12,3 +12,5 @@ docs/superpowers
 CLAUDE.md
 **/__pycache__/
 **/*.tgz
+plugin/*.log
+selftest.ps1

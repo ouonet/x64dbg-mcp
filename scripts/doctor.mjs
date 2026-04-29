@@ -215,6 +215,26 @@ if (pyX86) {
   check("PYTHON_HOME_X86", "warn", "not set — 32-bit loader will fall back to PATH");
 }
 
+// 7b. iced_x86 module availability in each Python
+function checkIcedX86(pyDir, archLabel) {
+  if (!pyDir) return;
+  const exe = path.join(pyDir, "python.exe");
+  if (!fs.existsSync(exe)) {
+    check(`iced_x86 (${archLabel})`, "warn", `python.exe not found in ${pyDir}`);
+    return;
+  }
+  try {
+    execSync(`"${exe}" -c "import iced_x86"`,
+      { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
+    check(`iced_x86 (${archLabel})`, "ok", "importable");
+  } catch {
+    check(`iced_x86 (${archLabel})`, "warn",
+      `not installed — run: "${exe}" -m pip install iced_x86  (bridge will fall back to x64dbg disasm)`);
+  }
+}
+checkIcedX86(pyX64, "x64");
+checkIcedX86(pyX86, "x86");
+
 // 8. CMake (for building C loader)
 const cmake = which("cmake");
 if (cmake) check("CMake (for building loader)", "ok", cmake);

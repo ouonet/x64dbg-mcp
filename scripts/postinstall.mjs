@@ -125,6 +125,34 @@ function findPythonDir(arch) {
   return null;
 }
 
+function pythonExeIn(dir) {
+  const candidate = path.join(dir, "python.exe");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+function ensureIcedX86(pyDir, archLabel) {
+  const exe = pythonExeIn(pyDir);
+  if (!exe) {
+    warn(`Python ${archLabel}: python.exe not found in ${pyDir}; skipping iced_x86 install`);
+    return;
+  }
+  try {
+    execSync(`"${exe}" -c "import iced_x86"`,
+      { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
+    ok(`iced_x86 already installed (${archLabel})`);
+    return;
+  } catch { /* not installed — try to install */ }
+
+  try {
+    execSync(`"${exe}" -m pip install --quiet --disable-pip-version-check iced_x86`,
+      { stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 });
+    ok(`iced_x86 installed (${archLabel})`);
+  } catch (err) {
+    warn(`iced_x86 install failed (${archLabel}); bridge will fall back to x64dbg disasm API`);
+    info(`  → manually run: "${exe}" -m pip install iced_x86`);
+  }
+}
+
 function parseEnv(text) {
   const map = new Map();
   for (const line of text.split("\n")) {
@@ -259,6 +287,12 @@ if (!env.has("PYTHON_HOME_X86") || !env.get("PYTHON_HOME_X86")) {
     warn("Python 32-bit not found — set PYTHON_HOME_X86 in .env (optional)");
   }
 }
+
+// 3b. Provision iced_x86 in each detected Python ──────────────────────────────
+const pyX64Dir = env.get("PYTHON_HOME_X64");
+if (pyX64Dir && fs.existsSync(pyX64Dir)) ensureIcedX86(pyX64Dir, "x64");
+const pyX86Dir = env.get("PYTHON_HOME_X86");
+if (pyX86Dir && fs.existsSync(pyX86Dir)) ensureIcedX86(pyX86Dir, "x86");
 
 // 4. Ensure baseline .env values ──────────────────────────────────────────────
 const defaults = {
