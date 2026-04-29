@@ -317,7 +317,7 @@ x64dbg-mcp/
 │   ├── types.ts               # Shared TypeScript types
 │   └── tools/
 │       ├── index.ts           # Tool registration barrel
-│       ├── debug.ts           # Core debugging (12 tools)
+│       ├── debug.ts           # Core debugging (16 tools)
 │       ├── memory.ts          # Memory & registers (9 tools)
 │       ├── analysis.ts        # Analysis (10 tools)
 │       └── security.ts        # Security analysis (5 tools)

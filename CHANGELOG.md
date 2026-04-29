@@ -13,10 +13,28 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-04-29
+
 ### Added
 - New `pause_execution` MCP tool (and matching `debug.pause` bridge handler) that
   asynchronously breaks a running debuggee and waits up to 10s for it to stop.
   Idempotent when the session is already paused. Brings the total tool count to 40.
+
+### Fixed
+- CI `TypeScript (Node 20/22)` job: the `x64dbgPath resolves to existing directory`
+  test relied on an un-awaited dynamic `import().then()`, so an assertion failure
+  surfaced as an `unhandledRejection` after the test had already ended and cascaded
+  into 4 phantom failures. The test is now `async`/`await`ed, and the directory
+  existence check only runs when `X64DBG_PATH` is explicitly set.
+- CI: `detects loaddll.exe (x64/x32)` and `resolveDebuggerExe` tests now skip via
+  `node:test`'s `{ skip }` option when the bundled x64dbg binaries are not present
+  on disk (CI runners do not download the x64dbg release archive).
+- CI `Python bridge` job: replaced the U+2500 (`─`) decorative separator in
+  `plugin/test_bridge.py` with ASCII `-` so the offline test runs cleanly under
+  the GitHub Windows runner's cp1252 console encoding.
+- `plugin/test_bridge.py::test_findall_unquoted` was asserting against a code path
+  the bridge no longer uses (memory.search no longer routes through `findall`); the
+  check is relaxed to only forbid the historic quoted-pattern regression.
 
 ## [1.0.1] - 2026-04-29
 
