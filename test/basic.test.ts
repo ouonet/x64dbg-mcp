@@ -5,11 +5,18 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
+
+// CI runners do not bundle x64dbg binaries; tests that require them are
+// skipped automatically when the binaries are not present on disk.
+const HAS_X64DBG_BINARIES = fs.existsSync(
+  path.join(ROOT, "x64dbg", "release", "x64", "x64dbg.exe"),
+);
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -54,17 +61,25 @@ describe("detectPEArchitecture", async () => {
     );
   });
 
-  test("detects loaddll.exe (x64dbg test host x64)", () => {
-    const loaddll = path.join(ROOT, "x64dbg", "release", "x64", "loaddll.exe");
-    const arch = detectPEArchitecture(loaddll);
-    assert.equal(arch, "x64");
-  });
+  test(
+    "detects loaddll.exe (x64dbg test host x64)",
+    { skip: !HAS_X64DBG_BINARIES && "x64dbg binaries not present" },
+    () => {
+      const loaddll = path.join(ROOT, "x64dbg", "release", "x64", "loaddll.exe");
+      const arch = detectPEArchitecture(loaddll);
+      assert.equal(arch, "x64");
+    },
+  );
 
-  test("detects loaddll.exe (x64dbg test host x32)", () => {
-    const loaddll = path.join(ROOT, "x64dbg", "release", "x32", "loaddll.exe");
-    const arch = detectPEArchitecture(loaddll);
-    assert.equal(arch, "x86");
-  });
+  test(
+    "detects loaddll.exe (x64dbg test host x32)",
+    { skip: !HAS_X64DBG_BINARIES && "x64dbg binaries not present" },
+    () => {
+      const loaddll = path.join(ROOT, "x64dbg", "release", "x32", "loaddll.exe");
+      const arch = detectPEArchitecture(loaddll);
+      assert.equal(arch, "x86");
+    },
+  );
 });
 
 // ─── Debugger path resolution ────────────────────────────────────────────────
@@ -74,15 +89,23 @@ describe("resolveDebuggerExe", async () => {
     typeof import("../src/launcher.js")
   >("src/launcher.ts");
 
-  test("resolves x64dbg.exe for x64", () => {
-    const exe = resolveDebuggerExe("x64");
-    assert.ok(exe.endsWith("x64dbg.exe"), `Expected x64dbg.exe, got: ${exe}`);
-  });
+  test(
+    "resolves x64dbg.exe for x64",
+    { skip: !HAS_X64DBG_BINARIES && "x64dbg binaries not present" },
+    () => {
+      const exe = resolveDebuggerExe("x64");
+      assert.ok(exe.endsWith("x64dbg.exe"), `Expected x64dbg.exe, got: ${exe}`);
+    },
+  );
 
-  test("resolves x32dbg.exe for x86", () => {
-    const exe = resolveDebuggerExe("x86");
-    assert.ok(exe.endsWith("x32dbg.exe"), `Expected x32dbg.exe, got: ${exe}`);
-  });
+  test(
+    "resolves x32dbg.exe for x86",
+    { skip: !HAS_X64DBG_BINARIES && "x64dbg binaries not present" },
+    () => {
+      const exe = resolveDebuggerExe("x86");
+      assert.ok(exe.endsWith("x32dbg.exe"), `Expected x32dbg.exe, got: ${exe}`);
+    },
+  );
 });
 
 // ─── cmdLineArgs splitting ────────────────────────────────────────────────────
