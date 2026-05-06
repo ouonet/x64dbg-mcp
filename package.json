@@ -4,6 +4,14 @@
   "description": "Production-level Model Context Protocol server for x64dbg reverse engineering and debugging",
   "type": "module",
   "main": "dist/server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ouonet/x64dbg-mcp.git"
+  },
+  "homepage": "https://github.com/ouonet/x64dbg-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ouonet/x64dbg-mcp/issues"
+  },
   "bin": {
     "x64dbg-mcp": "dist/server.js"
   },
@@ -28,6 +36,7 @@
   },
   "files": [
     "dist/",
+    "LICENSE",
     "scripts/postinstall.mjs",
     "scripts/prepack.mjs",
     "scripts/bridge-auth.mjs",

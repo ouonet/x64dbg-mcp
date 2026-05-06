@@ -396,3 +396,13 @@ x64dbg-mcp/
 ## License
 
 MIT
+
+## Community
+
+- Contribution guide: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: see [SECURITY.md](SECURITY.md)
+- Code of conduct: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Bug reports and feature requests: use the GitHub templates under `.github/ISSUE_TEMPLATE/`
+
+For non-sensitive questions or usage issues, open a GitHub issue.
+For vulnerabilities, follow the private reporting process in `SECURITY.md` instead of opening a public issue.
