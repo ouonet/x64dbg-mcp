@@ -557,9 +557,138 @@ def handle_debug_load(params: dict) -> dict:
     return result
 
 
+@handler("debug.attach")
+def handle_debug_attach(params: dict) -> dict:
+    import time as _time
+    _require_x64dbg()
+    pid = params.get("pid")
+    if not pid:
+        raise ValueError("Missing required parameter: pid")
+    
+    global _loaded_exe_path
+    prev_loaded = _loaded_exe_path  # capture BEFORE mutating
+    break_on_entry = params.get("breakOnEntry", True)
+    auto_analyze = params.get("autoAnalyze", True)
+    _FALLBACK_FUNCTION_CACHE.clear()
+
+    # If a session is already alive: same pid with a real pid → idempotent
+    # return; different pid / stuck "half-debugging" state → StopDebug and
+    # attach cleanly.
+    if sdk.DbgIsDebugging():
+        live_pid = 0
+        try:
+            live_pid = int(_eval_expr("$pid") or 0)
+        except Exception:
+            live_pid = 0
+        if live_pid == pid:
+            log_info(f"debug.attach: PID {pid} already attached (live_pid={live_pid}) — returning existing state")
+            entry = _eval_expr("cip")
+            ptr_size = sdk.get_ptr_size()
+            return {
+                "pid": live_pid,
+                "architecture": "x64" if ptr_size == 8 else "x86",
+                "entryPoint": _hex(entry),
+                "modules": [],
+            }
+        log_info(
+            f"debug.attach: existing session detected (loaded={prev_loaded!r}, pid={live_pid}); "
+            f"issuing StopDebug before attaching to {pid}"
+        )
+        sdk.DbgCmdExec("StopDebug")
+        for _ in range(150):  # up to 15 s
+            if not sdk.DbgIsDebugging():
+                break
+            _time.sleep(0.1)
+        if sdk.DbgIsDebugging():
+            if live_pid > 0:
+                # genuine real session that refuses to stop — surface error
+                raise RuntimeError(
+                    "x64dbg refused to stop the previous debug session within 15s. "
+                    "Close the debugger window manually and retry."
+                )
+            # phantom "half-debugging" state with no real pid — proceed anyway,
+            # InitDebug will take over.
+            log_info("debug.attach: phantom half-debugging state detected, proceeding with AttachDebugger")
+        _loaded_exe_path = None
+
+    attach_pid_expr = _hex(int(pid))
+    log_info(f"debug.attach: AttachDebugger {attach_pid_expr}")
+
+    # Use async DbgCmdExec — AttachDebugger is the correct command to attach to a running process.
+    # (InitDebug is for loading a new executable, not for attaching.)
+    if not sdk.DbgCmdExec(f"AttachDebugger {attach_pid_expr}"):
+        raise RuntimeError(f"DbgCmdExec rejected AttachDebugger command for PID: {pid}")
+
+    # Wait until x64dbg reports a real attached PID instead of the known
+    # phantom half-debugging state where DbgIsDebugging() is true but $pid == 0.
+    attached_pid = 0
+    for _ in range(300):  # up to 30 s
+        if sdk.DbgIsDebugging():
+            try:
+                attached_pid = int(_eval_expr("$pid") or 0)
+            except Exception:
+                attached_pid = 0
+            if attached_pid == pid:
+                break
+        _time.sleep(0.1)
+
+    if attached_pid != pid:
+        raise RuntimeError(
+            f"AttachDebugger did not attach to process {pid} within 30s. "
+            f"x64dbg reported pid={attached_pid}. Check that the process exists and is accessible "
+            f"(may require admin rights), and that no stale half-debugging state remains."
+        )
+
+    if break_on_entry:
+        _cmd("bpx cip")
+        sdk.DbgCmdExec("pause")
+        # Wait for debuggee to pause — up to 10 s
+        for _ in range(100):
+            if not sdk.DbgIsRunning():
+                break
+            _time.sleep(0.1)
+    else:
+        # Pause immediately to gather stable state
+        sdk.DbgCmdExec("pause")
+        for _ in range(100):  # up to 5 s
+            if not sdk.DbgIsRunning():
+                break
+            _time.sleep(0.05)
+
+    if auto_analyze:
+        _cmd("analyse")
+
+    # Gather basic info (safe to call only when debuggee is paused)
+    pid = _eval_expr("$pid")
+    entry = _eval_expr("cip")
+
+    # Detect architecture via pointer size
+    ptr_size = sdk.get_ptr_size()
+    architecture = "x64" if ptr_size == 8 else "x86"
+
+    # Module enumeration is deferred to analysis.getModules.
+    modules = []
+
+    _loaded_exe_path = f"<attached-pid-{pid}>"
+
+    result = {
+        "pid": pid,
+        "architecture": architecture,
+        "entryPoint": _hex(entry),
+        "modules": modules,
+    }
+
+    # When not breaking on entry, resume now that stable state has been collected
+    if not break_on_entry:
+        sdk.DbgCmdExec("run")
+
+    return result
+
+
 def _wait_for_stop(timeout: float = 120.0) -> None:
     """Wait until the debuggee is no longer running (paused or exited)."""
     import time as _t
+
     deadline = _t.time() + timeout
     _t.sleep(0.05)  # brief yield so erun can actually start
     while _t.time() < deadline:
@@ -570,22 +699,46 @@ def _wait_for_stop(timeout: float = 120.0) -> None:
             return  # if we can't query, assume stopped
         _t.sleep(0.05)
 
+    raise RuntimeError(f"Debuggee did not stop within {timeout:.1f}s")
 
-def _infer_stop_reason(cip: int) -> str:
+
+def _breakpoint_activity_detected(before: list[dict], after: list[dict]) -> bool:
+    after_map = {
+        (int(bp.get("address", 0)), int(bp.get("type", 0))): bp
+        for bp in after
+        if bp.get("enabled", False)
+    }
+
+    for bp in before:
+        if not bp.get("enabled", False):
+            continue
+        key = (int(bp.get("address", 0)), int(bp.get("type", 0)))
+        current = after_map.get(key)
+        if current is None:
+            return True
+        if int(current.get("hitCount", 0)) > int(bp.get("hitCount", 0)):
+            return True
+
+    return False
+
+
+def _infer_stop_reason(cip: int, before: list[dict] | None = None, after: list[dict] | None = None) -> str:
     """Infer why the debuggee stopped after a continue/run operation.
 
     Uses available bridge APIs to distinguish between common stop causes:
       - "exited"     — DbgIsDebugging() is False (process terminated)
-      - "breakpoint" — a software/hardware BP exists at the current IP
+      - "breakpoint" — a BP exists at the current IP, or BP metadata changed across the run
       - "paused"     — all other cases (exception, user pause, step, etc.)
     """
     try:
         if not sdk.DbgIsDebugging():
             return "exited"
-        bp_list = sdk.get_breakpoint_list()
-        for bp in bp_list:
+        bp_after = after if after is not None else sdk.get_breakpoint_list()
+        for bp in bp_after:
             if bp.get("address") == cip and bp.get("enabled", False):
                 return "breakpoint"
+        if before is not None and _breakpoint_activity_detected(before, bp_after):
+            return "breakpoint"
     except Exception:
         pass
     return "paused"
@@ -594,10 +747,16 @@ def _infer_stop_reason(cip: int) -> str:
 @handler("debug.continue")
 def handle_debug_continue(params: dict) -> dict:
     _require_x64dbg()
+    bp_before = []
+    with contextlib.suppress(Exception):
+        bp_before = sdk.get_breakpoint_list()
     _cmd("erun")
     _wait_for_stop()
     rip = _eval_expr("cip")
-    reason = _infer_stop_reason(rip)
+    bp_after = []
+    with contextlib.suppress(Exception):
+        bp_after = sdk.get_breakpoint_list()
+    reason = _infer_stop_reason(rip, bp_before, bp_after)
     return {
         "reason": reason,
         "address": _hex(rip),
@@ -753,8 +912,20 @@ def handle_debug_step_over(params: dict) -> dict:
 @handler("debug.stepOut")
 def handle_debug_step_out(params: dict) -> dict:
     _require_x64dbg()
-    _cmd("ertu")
+    _cmd("ertr")
     _wait_for_stop()
+
+    # x64dbg's run-to-return stops on the RET itself. Step over it once so the
+    # reported location is the caller's next instruction, matching tool semantics.
+    try:
+        rip = _eval_expr("cip")
+        info = sdk.DbgDisasmAt(rip)
+        if info.get("mnemonic", "").lower().startswith("ret"):
+            _cmd("esto")
+            _wait_for_stop()
+    except Exception:
+        pass
+
     return _current_location()
 
 
@@ -800,18 +971,7 @@ def handle_set_breakpoint(params: dict) -> dict:
     log_text = params.get("logText")
     name = params.get("name", "")
 
-    type_cmds = {
-        "software": f"bp {addr}",
-        "hardware_execute": f"bph {addr}, x",
-        "hardware_read": f"bph {addr}, r",
-        "hardware_write": f"bph {addr}, w",
-        "hardware_access": f"bph {addr}, rw",
-        "memory_read": f"bpm {addr}, 0, r",
-        "memory_write": f"bpm {addr}, 0, w",
-        "memory_access": f"bpm {addr}, 0, a",
-    }
-
-    cmd_str = type_cmds.get(bp_type)
+    cmd_str = _set_breakpoint_command(str(addr), str(bp_type))
     if not cmd_str:
         raise ValueError(f"Unknown breakpoint type: {bp_type}")
 
@@ -831,11 +991,50 @@ def handle_set_breakpoint(params: dict) -> dict:
     return {"address": addr, "resolved": True}
 
 
+def _set_breakpoint_command(addr: str, bp_type: str) -> str | None:
+    type_cmds = {
+        "software": f"bp {addr}",
+        "hardware_execute": f"bph {addr}, x",
+        "hardware_read": f"bph {addr}, r",
+        "hardware_write": f"bph {addr}, w",
+        "hardware_access": f"bph {addr}, rw",
+        "memory_read": f"bpmrange {addr}, 1, r",
+        "memory_write": f"bpm {addr}, 0, w",
+        "memory_access": f"bpmrange {addr}, 1, a",
+    }
+    return type_cmds.get(bp_type)
+
+
+def _remove_breakpoint_commands(addr: str, bp_type: int | None) -> list[str]:
+    if bp_type is None:
+        return [f"bc {addr}", f"bphc {addr}", f"bpmc {addr}"]
+    if bp_type & 0x02:
+        return [f"bphc {addr}"]
+    if bp_type & 0x04:
+        return [f"bpmc {addr}"]
+    return [f"bc {addr}"]
+
+
 @handler("debug.removeBreakpoint")
 def handle_remove_breakpoint(params: dict) -> dict:
     _require_x64dbg()
     addr = params["address"]
-    _cmd(f"bc {addr}")
+    target = None
+    try:
+        target = int(str(addr), 16)
+    except (ValueError, TypeError):
+        pass
+
+    bp_type = None
+    if target is not None:
+        with contextlib.suppress(Exception):
+            for bp in sdk.get_breakpoint_list():
+                if bp.get("address") == target:
+                    bp_type = int(bp.get("type", 0))
+                    break
+
+    for cmd in _remove_breakpoint_commands(str(addr), bp_type):
+        _cmd(cmd)
     return {"status": "removed"}
 
 
@@ -868,6 +1067,38 @@ def handle_session_terminate(params: dict) -> dict:
     _require_x64dbg()
     _cmd("stop")
     return {"status": "terminated"}
+
+
+@handler("debug.detach")
+def handle_debug_detach(params: dict) -> dict:
+    """Detach from the current debuggee without terminating the target process."""
+    _require_x64dbg()
+    import time as _time
+
+    global _loaded_exe_path
+    if not sdk.DbgIsDebugging():
+        _loaded_exe_path = None
+        return {"detached": True, "note": "not debugging"}
+
+    if not sdk.DbgCmdExec("DetachDebugger"):
+        raise RuntimeError("DbgCmdExec rejected DetachDebugger")
+
+    deadline = _time.time() + 10.0
+    while _time.time() < deadline:
+        if not sdk.DbgIsDebugging():
+            _loaded_exe_path = None
+            return {"detached": True}
+
+        detached_pid = 0
+        with contextlib.suppress(Exception):
+            detached_pid = int(_eval_expr("$pid") or 0)
+        if detached_pid == 0:
+            _loaded_exe_path = None
+            return {"detached": True, "note": "debugger reported pid=0 after detach"}
+
+        _time.sleep(0.05)
+
+    raise RuntimeError("DetachDebugger did not settle within 10s")
 
 
 @handler("debug.stop")

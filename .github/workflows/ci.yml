@@ -51,7 +51,7 @@ jobs:
           python -m py_compile plugin/x64dbg_bridge_sdk.py
 
       - name: Logic tests
-        run: python plugin/test_bridge.py
+        run: python plugin/tests/test_bridge.py
 
   # ── C loader build (both architectures) ──────────────────────────────────
   loader:

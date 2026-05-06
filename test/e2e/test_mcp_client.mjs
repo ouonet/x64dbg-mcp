@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..", "..");
 
 async function main() {
   console.log("=".repeat(60));
@@ -16,7 +17,7 @@ async function main() {
 
   // Step 1: Start the bridge in standalone mode
   console.log("\n[1/3] Starting bridge in standalone mode...");
-  const bridgePy = path.join(__dirname, "plugin", "x64dbg_mcp_bridge.py");
+  const bridgePy = path.join(repoRoot, "plugin", "x64dbg_mcp_bridge.py");
   const bridge = spawn("python", [bridgePy], { stdio: "pipe" });
   bridge.stderr?.on("data", () => {});
   bridge.stdout?.on("data", () => {});
@@ -53,7 +54,7 @@ async function main() {
 
   // Step 2: Connect MCP client to server via STDIO
   console.log("\n[2/3] Starting MCP server and connecting client...");
-  const serverJs = path.join(__dirname, "dist", "server.js");
+  const serverJs = path.join(repoRoot, "dist", "server.js");
 
   const transport = new StdioClientTransport({
     command: "node",

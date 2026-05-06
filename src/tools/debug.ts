@@ -146,6 +146,120 @@ export function registerDebugTools(server: McpServer): void {
     }
   );
 
+  // ── Attach to running process ─────────────────────────────────────────
+
+  server.tool(
+    "attach_to_process",
+    "Attach to an already-running process by PID. Auto-detects the process architecture " +
+      "(x86 or x64) and launches the appropriate debugger if one is not already running. " +
+      "If a debugger is already active with a different target, it will be stopped first. " +
+      "With breakOnEntry=true (default): execution pauses at the current instruction. " +
+      "With breakOnEntry=false: execution continues and pauses when stable state is reached. " +
+      "Returns a sessionId that can be used with other debugging tools.",
+    {
+      pid: z.number().int().positive().describe("Process ID to attach to"),
+      breakOnEntry: z
+        .boolean()
+        .default(true)
+        .describe("Pause execution immediately after attach (default true)"),
+      autoAnalyze: z
+        .boolean()
+        .default(true)
+        .describe("Run analysis on attach (default true)"),
+    },
+    async ({ pid, breakOnEntry, autoAnalyze }) => {
+      try {
+        // Import here to avoid circular dependencies
+        const { detectProcessArchitecture, launchDebuggerForAttach, isDebuggerRunning } = await import(
+          "../launcher.js"
+        );
+
+        // Check if already at max sessions
+        const activeSessions = sessions.list();
+        if (activeSessions.length > 0) {
+          // We allow reusing existing debugger by stopping and reattaching
+          logger.info(`Detaching from previous session to attach to PID ${pid}`);
+        }
+
+        // Detect target process architecture
+        let targetArch: "x86" | "x64";
+        try {
+          targetArch = detectProcessArchitecture(pid);
+          logger.info(`Detected target process PID ${pid} is ${targetArch}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: Could not determine process architecture for PID ${pid}. ${msg}. ` +
+                  `Ensure the process exists and you have permission to query it (may need admin rights).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Auto-launch debugger if not running
+        if (!isDebuggerRunning()) {
+          logger.info(`No debugger running, launching ${targetArch} debugger for PID ${pid}...`);
+          await launchDebuggerForAttach(pid, targetArch);
+          logger.info("Debugger launched");
+        }
+
+        // Create session before calling bridge
+        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid);
+        const sessionId = session.id;
+        sessions.updateState(sessionId, "paused");
+
+        try {
+          const result = await bridge.call<{
+            pid: number;
+            architecture: string;
+            entryPoint: string;
+            modules: Array<{ name: string; base: string; size: number }>;
+          }>("debug.attach", {
+            sessionId,
+            pid,
+            breakOnEntry,
+            autoAnalyze,
+          }, 90_000);
+
+          sessions.updateState(sessionId, "paused");
+          // Module enumeration is deferred to analysis.getModules, so we don't set them here
+          // Just keep the modules array empty
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    sessionId,
+                    pid: result.pid,
+                    architecture: result.architecture,
+                    entryPoint: result.entryPoint,
+                    state: "paused",
+                    modulesLoaded: 0,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        } catch (err: unknown) {
+          sessions.terminate(sessionId);
+          throw err;
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`attach_to_process failed: ${msg}`);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // ── Continue execution ────────────────────────────────────────────────
 
   server.tool(
@@ -622,6 +736,55 @@ export function registerDebugTools(server: McpServer): void {
               type: "text" as const,
               text: JSON.stringify(
                 { status: "terminated", sessionId, debuggerKept: true },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Detach session ────────────────────────────────────────────────────
+
+  server.tool(
+    "detach_session",
+    "Detach the debugger from the current debuggee without terminating the target process. " +
+      "x64dbg itself stays open and ready for the next attach_to_process or load_executable call.",
+    {
+      sessionId: z.string().describe("Session ID to detach"),
+    },
+    async ({ sessionId }) => {
+      try {
+        if (!sessions.has(sessionId)) {
+          return {
+            content: [{ type: "text" as const, text: `Error: Session not found: ${sessionId}` }],
+            isError: true,
+          };
+        }
+        if (!bridge.isConnected) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "Error: Bridge is not connected, cannot detach the live debuggee safely.",
+            }],
+            isError: true,
+          };
+        }
+
+        await bridge.call("debug.detach", { sessionId });
+        sessions.terminate(sessionId);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { status: "detached", sessionId, processKept: true, debuggerKept: true },
                 null,
                 2
               ),

@@ -25,9 +25,11 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - Launches the correct debugger variant (`x32dbg` or `x64dbg`) with the target executable
 - Waits for the bridge plugin TCP port to become reachable, then connects — **zero manual setup**
 
-### Core Debugging (16 tools)
+### Core Debugging (18 tools)
 
 - `load_executable` — Load PE file, **auto-detect x86/x64, auto-launch debugger**, break on entry
+- `attach_to_process` — Attach to a running process by PID, **auto-detect architecture, auto-launch debugger**
+- `detach_session` — Detach from the current debuggee **without terminating the target process**
 - `continue_execution` / `pause_execution` / `step_into` / `step_over` / `step_out`
 - `run_to_address` — Run until a specific address
 - `set_breakpoint` — Software, hardware (execute/read/write/access), and memory BPs with conditions and log text
@@ -65,7 +67,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 - `check_section_anomalies` — W+X sections, unusual names, zero raw-size, high entropy detection
 - `generate_security_report` — Consolidated first-pass triage of all security checks with overall risk level
 
-**Total: 40 tools**
+**Total: 41 tools**
 
 ## Prerequisites
 
@@ -186,7 +188,7 @@ the same token as the MCP server.
 ### Configure your AI host
 
 > **Note:** You no longer need to manually start x64dbg. The MCP server auto-launches
-> the correct debugger when you call `load_executable`.
+> the correct debugger when you call `load_executable` or `attach_to_process`.
 
 #### Claude Desktop
 
@@ -230,7 +232,25 @@ The AI will use the MCP tools to:
 3. `disassemble` → inspect suspicious code
 4. `set_breakpoint` + `continue_execution` → dynamic analysis
 
+For an already-running process, ask instead:
+
+> "Attach to PID 1234 and inspect the current thread"
+
+The AI can then use `attach_to_process`, `get_call_stack`, `get_registers`,
+`set_breakpoint`, and `detach_session` without terminating the target process.
+
 ## Example Workflows
+
+### Process Attachment
+
+```
+User: "Debug PID 1234 that's already running"
+AI:   attach_to_process(1234) → pause_execution → get_call_stack →
+      disassemble → set_breakpoint → continue_execution
+```
+
+To leave the target running after an attach, call `detach_session(sessionId)`.
+Use `terminate_session(sessionId)` only when you want to stop the target process.
 
 ### Crash Analysis
 
@@ -271,6 +291,7 @@ npm run setup-x64dbg -- --tag snapshot_2024-09-10_00-00  # Pin to specific versi
 npm run build                     # Compile TypeScript → dist/
 npm run lint                      # ESLint src/**/*.ts
 npm test                          # Unit tests (no x64dbg required)
+npm run test:e2e                  # SDK-based end-to-end smoke test
 npm run inspector                 # Launch MCP Inspector UI
 npm run clean                     # Remove dist/
 ```
@@ -289,10 +310,29 @@ hook before starting the server — no manual copy needed during development.
 npm test
 
 # Python bridge offline tests (no x64dbg required)
-python plugin/test_bridge.py
+python plugin/tests/test_bridge.py
+
+# SDK-based end-to-end smoke test
+npm run test:e2e
 
 # Full environment check
 x64dbg-mcp doctor
+```
+
+Reusable verifier scripts live under `test/e2e/`. They no longer assume a local sample
+binary or process name. Provide one of these explicitly when running them:
+
+- `TARGET_EXE=C:\path\to\sample.exe` for load-based verifiers
+- `TARGET_PID=1234` or `TARGET_PROCESS_NAME=notepad` for attach-based verifiers
+
+Examples:
+
+```powershell
+$env:TARGET_EXE = "C:\Windows\System32\notepad.exe"
+node test/e2e/verify_breakpoint_chain.mjs
+
+$env:TARGET_PROCESS_NAME = "notepad"
+node test/e2e/verify_attach_chain.mjs
 ```
 
 CI (`.github/workflows/ci.yml`) runs all three jobs on every push:
@@ -317,14 +357,15 @@ x64dbg-mcp/
 │   ├── types.ts               # Shared TypeScript types
 │   └── tools/
 │       ├── index.ts           # Tool registration barrel
-│       ├── debug.ts           # Core debugging (16 tools)
+│       ├── debug.ts           # Core debugging (18 tools)
 │       ├── memory.ts          # Memory & registers (9 tools)
 │       ├── analysis.ts        # Analysis (10 tools)
 │       └── security.ts        # Security analysis (5 tools)
 ├── plugin/
 │   ├── x64dbg_mcp_bridge.py   # TCP server + handler dispatch
 │   ├── x64dbg_bridge_sdk.py   # ctypes bindings to x64bridge.dll
-│   ├── test_bridge.py         # Offline unit tests (no x64dbg required)
+│   ├── tests/
+│   │   └── test_bridge.py     # Offline unit tests (no x64dbg required)
 │   ├── loader/
 │   │   ├── x64dbg_mcp_loader.c     # C plugin — embeds Python 3
 │   │   ├── CMakeLists.txt
@@ -337,9 +378,11 @@ x64dbg-mcp/
 │   ├── doctor.mjs             # x64dbg-mcp doctor — pre-flight diagnostics
 │   ├── sync-plugin.mjs        # npm run sync-plugin — sync .py to bundled x64dbg (predev hook)
 │   ├── ci.mjs                 # npm run ci — local CI pipeline
-│   └── install-plugin.ps1     # npm run install-plugin — compile C loader & deploy
+│   ├── install-plugin.ps1     # npm run install-plugin — compile C loader & deploy
+│   └── manual/                # Manual debugger helpers not used by CI
 ├── test/
-│   └── basic.test.ts          # Node.js built-in test runner
+│   ├── basic.test.ts          # Node.js built-in test runner
+│   └── e2e/                   # Reusable end-to-end verification scripts
 ├── .github/
 │   └── workflows/
 │       └── ci.yml             # CI + npm publish on tag

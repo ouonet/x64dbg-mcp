@@ -62,7 +62,7 @@ step("Python syntax check", () =>
   run("python -m py_compile plugin/x64dbg_mcp_bridge.py plugin/x64dbg_bridge_sdk.py")
 );
 
-step("Python bridge tests", () => run("python plugin/test_bridge.py"));
+step("Python bridge tests", () => run("python plugin/tests/test_bridge.py"));
 
 if (skipLoader) {
   console.log(`\n${c.skip}── C loader build  [skipped via --no-loader]${c.rst}`);

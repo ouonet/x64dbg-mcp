@@ -6,7 +6,7 @@
  * become reachable over TCP.
  */
 
-import { spawn, ChildProcess } from "child_process";
+import { spawn, ChildProcess, execFileSync } from "child_process";
 import fs from "fs";
 import net from "net";
 import path from "path";
@@ -202,17 +202,83 @@ export async function launchDebugger(
     debuggerProcess = null;
   }
 
+  
   debuggerProcess = spawn(dbgExe, args, {
     detached: true,
     stdio: "ignore",
     windowsHide: false,
   });
 
-  debuggerProcess.unref();
+  debuggerProcess.on("error", (err: Error) => {
+    logger.error(`Debugger process error: ${err.message}`);
+  });
+
+  debuggerProcess.on("exit", (code: number | null) => {
+    logger.info(`Debugger process exited (code ${code})`);
+    debuggerProcess = null;
+  });
+
+  logger.info(
+    `Debugger spawned (pid=${debuggerProcess.pid}), waiting for bridge...`
+  );
+
+  // Wait for bridge plugin to open its TCP port
+  await waitForBridge(config.bridgeHost, config.bridgePort);
+
+  return arch;
+}
+
+/**
+ * Launch x64dbg (or x32dbg) for attaching to a running process by PID.
+ * Similar to launchDebugger but takes a PID and architecture instead of an executable.
+ * 
+ * @param pid Process ID to attach to
+ * @param arch Target process architecture ("x86" or "x64")
+ * @returns The target process architecture.
+ */
+export async function launchDebuggerForAttach(
+  pid: number,
+  arch: "x86" | "x64"
+): Promise<"x86" | "x64"> {
+  if (!fs.existsSync(config.x64dbgPath)) {
+    throw new Error(`x64dbg installation not found: ${config.x64dbgPath}`);
+  }
+
+  // If x64dbg is already running with bridge open, reuse it — skip spawn.
+  const alreadyRunning = await probeBridge(config.bridgeHost, config.bridgePort);
+  if (alreadyRunning) {
+    logger.info("Bridge already reachable — reusing existing x64dbg instance");
+    return arch;
+  }
+
+  const dbgExe = resolveDebuggerExe(arch);
+
+  logger.info(`Launching ${arch} debugger for attaching to PID ${pid}`);
+  logger.info(`Debugger: ${dbgExe}`);
+
+  // Start a plain debugger instance and let the bridge perform a single
+  // AttachDebugger call. Mixing startup `-pid` attach with a second bridge-side
+  // attach races on some targets and can leave x64dbg stuck with `$pid == 0`.
+  const args: string[] = [];
+
+  // Kill previous debugger process if still alive
+  if (debuggerProcess && debuggerProcess.exitCode === null) {
+    logger.warn("Killing previous debugger process");
+    debuggerProcess.kill();
+    debuggerProcess = null;
+  }
+
+  debuggerProcess = spawn(dbgExe, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
 
   debuggerProcess.on("error", (err: Error) => {
     logger.error(`Debugger process error: ${err.message}`);
   });
+
+  debuggerProcess.unref();
 
   debuggerProcess.on("exit", (code: number | null) => {
     logger.info(`Debugger process exited (code ${code})`);
@@ -253,4 +319,36 @@ export function killDebugger(): void {
  */
 export function isDebuggerRunning(): boolean {
   return debuggerProcess !== null && debuggerProcess.exitCode === null;
+}
+
+/**
+ * Detect the architecture (x86 or x64) of a running process by PID.
+ * Uses PowerShell to check if process is 32-bit (Wow64) or 64-bit.
+ * Returns "x86" or "x64", or throws if the PID is invalid or inaccessible.
+ */
+export function detectProcessArchitecture(pid: number): "x86" | "x64" {
+  try {
+    // Resolve executable path from PID, then detect architecture from PE header.
+    // This avoids fragile PowerShell quoting around Win32 API interop calls.
+    const exePath = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", `(Get-Process -Id ${pid} -ErrorAction Stop).Path`],
+      {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      }
+    ).trim();
+
+    if (!exePath) {
+      throw new Error("Process path is empty");
+    }
+
+    if (!fs.existsSync(exePath)) {
+      throw new Error(`Process executable not found on disk: ${exePath}`);
+    }
+
+    return detectPEArchitecture(exePath);
+  } catch (err: any) {
+    throw new Error(`Failed to detect architecture for PID ${pid}: ${err.message}`);
+  }
 }

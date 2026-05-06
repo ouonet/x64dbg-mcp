@@ -13,28 +13,42 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.0.2] - 2026-04-29
+## [1.0.2] - 2026-05-06
 
 ### Added
-- New `pause_execution` MCP tool (and matching `debug.pause` bridge handler) that
-  asynchronously breaks a running debuggee and waits up to 10s for it to stop.
-  Idempotent when the session is already paused. Brings the total tool count to 40.
+- New `attach_to_process` MCP tool to attach to a running process by PID.
+  - Auto-detects target architecture (x86/x64).
+  - Auto-launches the appropriate debugger when needed.
+  - Returns session metadata including PID, architecture, and entry point.
+- New `detach_session` MCP tool to detach from the current debuggee without terminating the target process.
+- New `pause_execution` MCP tool and matching `debug.pause` bridge handler for asynchronously breaking a running debuggee.
+- New Python bridge handlers `debug.attach` and `debug.detach`.
+- New reusable verifier layout under `test/e2e/`, including `_target.mjs` for explicit `TARGET_EXE`, `TARGET_PID`, and `TARGET_PROCESS_NAME` resolution.
+- New offline regression coverage in `plugin/tests/test_bridge.py` for attach, detach, breakpoint selection, and stop-reason inference.
+
+### Changed
+- `launchDebuggerForAttach()` now starts a plain debugger instance and lets bridge-side `debug.attach` perform the single attach step.
+- Reusable verification scripts were moved from the repository root into `test/e2e/`.
+- Manual debugging helpers were moved into `scripts/manual/`.
+- README, CI, and npm scripts now point to `test/e2e/test_mcp_client.mjs` and `plugin/tests/test_bridge.py`.
+- Reusable verifiers are now machine-agnostic and require explicit target selection instead of baked-in local sample paths or process names.
+- `debug.stepOut` now runs to the return site and steps past the `ret` instruction before reporting the caller location.
+- Breakpoint helpers now select the correct x64dbg commands for memory breakpoints and breakpoint removal by type.
 
 ### Fixed
-- CI `TypeScript (Node 20/22)` job: the `x64dbgPath resolves to existing directory`
-  test relied on an un-awaited dynamic `import().then()`, so an assertion failure
-  surfaced as an `unhandledRejection` after the test had already ended and cascaded
-  into 4 phantom failures. The test is now `async`/`await`ed, and the directory
-  existence check only runs when `X64DBG_PATH` is explicitly set.
-- CI: `detects loaddll.exe (x64/x32)` and `resolveDebuggerExe` tests now skip via
-  `node:test`'s `{ skip }` option when the bundled x64dbg binaries are not present
-  on disk (CI runners do not download the x64dbg release archive).
-- CI `Python bridge` job: replaced the U+2500 (`─`) decorative separator in
-  `plugin/test_bridge.py` with ASCII `-` so the offline test runs cleanly under
-  the GitHub Windows runner's cp1252 console encoding.
-- `plugin/test_bridge.py::test_findall_unquoted` was asserting against a code path
-  the bridge no longer uses (memory.search no longer routes through `findall`); the
-  check is relaxed to only forbid the historic quoted-pattern regression.
+- `AttachDebugger` now receives the PID as an explicit hex expression, avoiding x64dbg's default hex parsing from attaching to the wrong process.
+- Attach flows now handle stale or phantom debugger state more safely before reattaching.
+- Detach flows now treat x64dbg's transient `$pid == 0` state as a successful detach.
+- `continue_execution` now recognizes memory-breakpoint hits by comparing breakpoint snapshots before and after execution.
+- CI `TypeScript (Node 20/22)` tests now await the dynamic import used by the `x64dbgPath resolves to existing directory` check, preventing late `unhandledRejection` cascades.
+- CI tests that require bundled x64dbg binaries now skip cleanly when the binaries are unavailable on the runner.
+- Python offline tests use ASCII-only console separators and keep only the relevant `findall` regression guard.
+
+### Removed
+- Removed the redundant root-level Python E2E helper `test_mcp_e2e.py`.
+- Removed the duplicate npm script `test:e2e:py`.
+- Removed the old root-level `test_mcp_client.mjs` helper in favor of `test/e2e/test_mcp_client.mjs`.
+- Removed the old `plugin/test_bridge.py` path in favor of `plugin/tests/test_bridge.py`.
 
 ## [1.0.1] - 2026-04-29
 
@@ -106,7 +120,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for session-limit and not-found errors (#10).
 - `logToolCall(method, sessionId, durationMs, error?)` helper added to `src/logger.ts`
   for consistent structured per-call observability (#25).
-- `test:e2e` and `test:e2e:py` npm scripts expose `test_mcp_client.mjs` and
+- `test:e2e` and `test:e2e:py` npm scripts expose `test/e2e/test_mcp_client.mjs` and
   `test_mcp_e2e.py` as runnable commands (require live bridge + compiled server) (#11).
 - Unit test suite extended from 27 to 37 tests: mock TCP server protocol tests,
   `ErrorCode`/`McpError` invariants, and `logToolCall` smoke tests (#10).
