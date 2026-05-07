@@ -1,6 +1,6 @@
 {
   "name": "x64dbg-mcp",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Production-level Model Context Protocol server for x64dbg reverse engineering and debugging",
   "type": "module",
   "main": "dist/server.js",
@@ -24,6 +24,8 @@
     "inspector": "npx @modelcontextprotocol/inspector node dist/server.js",
     "test": "npx tsx --test test/basic.test.ts",
     "test:e2e": "node test/e2e/test_mcp_client.mjs",
+    "test:http-smoke": "npm run build && node scripts/manual/test_http_transport.mjs",
+    "test:http-smoke:attach:process-name": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual/run_http_attach_process_name_smoke.ps1",
     "lint": "eslint \"src/**/*.ts\"",
     "clean": "rimraf dist",
     "setup": "node scripts/setup.mjs",

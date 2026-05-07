@@ -13,6 +13,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-07
+
+### Added
+- Optional MCP Streamable HTTP transport alongside the existing STDIO entry path.
+  - New HTTP server bootstrap in `src/httpServer.ts` with per-session MCP server instances.
+  - New `src/mcpServer.ts` factory to share tool registration across STDIO and HTTP startup paths.
+  - New transport-related config keys: `MCP_TRANSPORT`, `MCP_HTTP_HOST`, and `MCP_HTTP_PORT`.
+- New HTTP transport regression coverage in `test/basic.test.ts` that initializes a real Streamable HTTP client and verifies tool discovery.
+- New manual HTTP smoke helpers:
+  - `scripts/manual/test_http_transport.mjs` for HTTP connect, `get_status`, tool listing, and optional `load_executable` / `attach_to_process` validation.
+  - `scripts/manual/run_http_attach_process_name_smoke.ps1` for a one-command Windows `TARGET_PROCESS_NAME` attach smoke run.
+- New npm scripts:
+  - `test:http-smoke`
+  - `test:http-smoke:attach:process-name`
+
+### Changed
+- HTTP startup now prefers CLI flags such as `--transport streamable-http --host localhost --port 3000`; the HTTP endpoint path is fixed at `/mcp` and the legacy standalone SSE transport is not exposed as a startup mode.
+- `test:http-smoke` now rebuilds `dist/` before launching the manual HTTP smoke script so the validation path always uses the latest server entrypoint.
+- README and `.env.example` now document the CLI-first HTTP startup flow, transport configuration, HTTP client connection, and the new smoke-test flows.
+
 ## [1.0.2] - 2026-05-06
 
 ### Added

@@ -313,6 +313,9 @@ export interface ServerConfig {
   bridgeHost: string;
   bridgePort: number;
   bridgeAuthToken: string;
+  mcpTransport: "stdio" | "streamable-http";
+  mcpHttpHost: string;
+  mcpHttpPort: number;
   logLevel: "error" | "warn" | "info" | "debug";
   sessionTimeoutMs: number;
   maxDisasmInstructions: number;

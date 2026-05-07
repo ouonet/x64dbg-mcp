@@ -77,6 +77,13 @@ function parseEnvInt(value: string | undefined, fallback: number): number {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+function normalizeMcpTransport(value: string | undefined): ServerConfig["mcpTransport"] {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "http" || normalized === "streamable-http"
+    ? "streamable-http"
+    : "stdio";
+}
+
 function normalizeBridgeToken(token: string): string {
   return token.replace(/^\uFEFF/, "").trim();
 }
@@ -114,6 +121,9 @@ export function loadConfig(): ServerConfig {
     bridgeHost: process.env.BRIDGE_HOST || "127.0.0.1",
     bridgePort: parseEnvInt(process.env.BRIDGE_PORT, 27042),
     bridgeAuthToken,
+    mcpTransport: normalizeMcpTransport(process.env.MCP_TRANSPORT),
+    mcpHttpHost: process.env.MCP_HTTP_HOST || "127.0.0.1",
+    mcpHttpPort: parseEnvInt(process.env.MCP_HTTP_PORT, 3000),
     logLevel: (process.env.LOG_LEVEL as ServerConfig["logLevel"]) || "info",
     sessionTimeoutMs: parseEnvInt(process.env.SESSION_TIMEOUT_MS, 3_600_000),
     maxDisasmInstructions: parseEnvInt(process.env.MAX_DISASM_INSTRUCTIONS, 500),

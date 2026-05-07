@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -135,6 +137,61 @@ describe("cmdLineArgs splitting (regression)", () => {
 
   test("empty string gives no args", () => {
     assert.deepEqual(splitArgs(""), []);
+  });
+});
+
+// ─── CLI runtime overrides ──────────────────────────────────────────────────
+
+describe("parseCliRuntimeOverrides", async () => {
+  const { parseCliRuntimeOverrides, renderCliUsage } = await importFresh<
+    typeof import("../src/cli.js")
+  >("src/cli.ts");
+
+  test("parses streamable HTTP startup flags", () => {
+    const options = parseCliRuntimeOverrides([
+      "--transport",
+      "streamable-http",
+      "--host",
+      "localhost",
+      "--port",
+      "3000",
+    ]);
+
+    assert.deepEqual(options, {
+      transport: "streamable-http",
+      host: "localhost",
+      port: 3000,
+      showHelp: false,
+    });
+  });
+
+  test("accepts --transport=http alias", () => {
+    const options = parseCliRuntimeOverrides(["--transport=http"]);
+    assert.equal(options.transport, "streamable-http");
+    assert.equal(options.showHelp, false);
+  });
+
+  test("recognises help flag", () => {
+    const options = parseCliRuntimeOverrides(["--help"]);
+    assert.equal(options.showHelp, true);
+  });
+
+  test("rejects legacy sse transport mode", () => {
+    assert.throws(
+      () => parseCliRuntimeOverrides(["--transport", "sse"]),
+      /Unsupported transport/
+    );
+  });
+
+  test("rejects unknown arguments", () => {
+    assert.throws(
+      () => parseCliRuntimeOverrides(["--path", "/custom"]),
+      /Unknown argument/
+    );
+  });
+
+  test("usage mentions fixed HTTP path", () => {
+    assert.match(renderCliUsage(), /fixed at \/mcp/);
   });
 });
 
@@ -283,6 +340,41 @@ describe("loadConfig", async () => {
     assert.equal(cfg.bridgeHost, "127.0.0.1");
   });
 
+  test("defaults to stdio MCP transport", () => {
+    delete process.env.MCP_TRANSPORT;
+    delete process.env.MCP_HTTP_HOST;
+    delete process.env.MCP_HTTP_PORT;
+
+    const cfg = loadConfig();
+    assert.equal(cfg.mcpTransport, "stdio");
+    assert.equal(cfg.mcpHttpHost, "127.0.0.1");
+    assert.equal(cfg.mcpHttpPort, 3000);
+  });
+
+  test("reads HTTP MCP transport env overrides", () => {
+    process.env.MCP_TRANSPORT = "streamable-http";
+    process.env.MCP_HTTP_HOST = "0.0.0.0";
+    process.env.MCP_HTTP_PORT = "4100";
+
+    const cfg = loadConfig();
+    assert.equal(cfg.mcpTransport, "streamable-http");
+    assert.equal(cfg.mcpHttpHost, "0.0.0.0");
+    assert.equal(cfg.mcpHttpPort, 4100);
+
+    delete process.env.MCP_TRANSPORT;
+    delete process.env.MCP_HTTP_HOST;
+    delete process.env.MCP_HTTP_PORT;
+  });
+
+  test("accepts legacy http env alias", () => {
+    process.env.MCP_TRANSPORT = "http";
+
+    const cfg = loadConfig();
+    assert.equal(cfg.mcpTransport, "streamable-http");
+
+    delete process.env.MCP_TRANSPORT;
+  });
+
   test("x64dbgPath resolves to a non-empty string", async () => {
     const cfg = loadConfig();
     assert.equal(typeof cfg.x64dbgPath, "string");
@@ -304,6 +396,46 @@ describe("loadConfig", async () => {
     const cfg = loadConfig();
     assert.equal(cfg.bridgePort, 12345);
     delete process.env.BRIDGE_PORT;
+  });
+});
+
+// ─── HTTP MCP transport ─────────────────────────────────────────────────────
+
+describe("HTTP MCP transport", async () => {
+  const { startHttpMcpServer } = await importFresh<
+    typeof import("../src/httpServer.js")
+  >("src/httpServer.ts");
+  const { createMcpServer } = await importFresh<
+    typeof import("../src/mcpServer.js")
+  >("src/mcpServer.ts");
+
+  test("initializes over streamable HTTP and lists tools", async () => {
+    const httpServer = await startHttpMcpServer({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/mcp",
+      createServer: createMcpServer,
+    });
+
+    const client = new Client({ name: "http-transport-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://${httpServer.host}:${httpServer.port}${httpServer.path}`)
+    );
+
+    try {
+      await client.connect(transport);
+      const result = await client.listTools();
+
+      assert.ok(result.tools.length > 0, "Expected at least one MCP tool over HTTP");
+      assert.ok(
+        result.tools.some((tool) => tool.name === "load_executable"),
+        "Expected load_executable to be exposed over HTTP"
+      );
+    } finally {
+      await transport.close();
+      await client.close();
+      await httpServer.close();
+    }
   });
 });
 

@@ -1,126 +1,115 @@
 # x64dbg MCP Server
 
-A production-level [Model Context Protocol](https://modelcontextprotocol.io) server that exposes **x64dbg** reverse-engineering and debugging capabilities to AI assistants (Claude, Windsurf Cascade, Cursor, etc.).
+A production-level [Model Context Protocol](https://modelcontextprotocol.io) server that exposes **x64dbg** reverse-engineering and debugging capabilities to AI assistants over **STDIO** or **Streamable HTTP**.
 
-## Architecture
+It is designed for practical debugger automation, not just toy examples:
 
+- Auto-detects PE architecture and launches `x32dbg` or `x64dbg` as needed
+- Supports both `load_executable` and `attach_to_process`
+- Exposes debugging, memory, analysis, and security triage tools through MCP
+- Uses a lightweight bridge plugin and talks to `x64bridge.dll` directly via `ctypes`
+- Does not depend on `x64dbgpy`
+
+## Quick Start
+
+### Recommended path
+
+```bash
+npm install -g x64dbg-mcp
+x64dbg-mcp setup
+x64dbg-mcp doctor
 ```
-┌─────────────────┐  STDIO/JSON-RPC   ┌──────────────────┐  TCP (JSON)  ┌──────────────┐
-│  AI Assistant   │ ◄───────────────► │  MCP Server      │ ◄──────────► │  x64dbg      │
-│  (Claude, etc.) │                   │  (Node.js / TS)  │  port 27042  │  + Bridge    │
-└─────────────────┘                   └──────────────────┘              │    Plugin    │
-                                                                        └──────────────┘
+
+After that, choose one transport:
+
+- **STDIO**: let your MCP host launch `x64dbg-mcp` directly
+- **Streamable HTTP**: start a long-running server with:
+
+```powershell
+x64dbg-mcp --transport streamable-http --host localhost --port 3000
 ```
 
-**Two components:**
+The HTTP endpoint is fixed at `http://localhost:3000/mcp`.
 
-1. **MCP Server** (`src/`) — TypeScript Node.js process. Speaks MCP over STDIO to the AI host and connects to the bridge over TCP.
-2. **Bridge Plugin** (`plugin/`) — A lightweight C loader plugin embeds Python 3.10+ inside x64dbg. The Python bridge script calls `x64bridge.dll` directly via `ctypes` — **no x64dbgpy dependency**. Exposes a local TCP server that translates MCP requests into x64dbg Bridge SDK calls.
+`stdio` and `streamable-http` are the supported startup transports. The SDK still ships a standalone SSE server transport, but it is deprecated and this project does not expose it as a separate mode.
 
-## Features
+## Requirements
 
-### Auto-Launch & PE Detection
+- **Windows** only, because x64dbg is Windows-only
+- **Node.js 20+**
+- **Python 3.10+**
+- **CMake 3.15+** plus MSVC or MinGW only if you need to build the C loader from source
 
-- Automatically detects PE architecture (x86 / x64) by reading the PE header
-- Launches the correct debugger variant (`x32dbg` or `x64dbg`) with the target executable
-- Waits for the bridge plugin TCP port to become reachable, then connects — **zero manual setup**
-
-### Core Debugging (18 tools)
-
-- `load_executable` — Load PE file, **auto-detect x86/x64, auto-launch debugger**, break on entry
-- `attach_to_process` — Attach to a running process by PID, **auto-detect architecture, auto-launch debugger**
-- `detach_session` — Detach from the current debuggee **without terminating the target process**
-- `continue_execution` / `pause_execution` / `step_into` / `step_over` / `step_out`
-- `run_to_address` — Run until a specific address
-- `set_breakpoint` — Software, hardware (execute/read/write/access), and memory BPs with conditions and log text
-- `remove_breakpoint` / `list_breakpoints`
-- `terminate_session` / `list_sessions`
-- `get_status` — Query bridge connectivity, session state, current IP, and next-step hint
-- `close_debugger` — Kill the x64dbg/x32dbg process (works even if bridge is disconnected)
-- `collect_bp_args` — Loop through breakpoint hits and collect a memory expression at each hit
-- `execute_command` — Run any raw x64dbg command
-
-### Memory & Registers (9 tools)
-
-- `read_memory` / `write_memory` / `search_memory` — Hex patterns with wildcards, ASCII/Unicode text
-- `get_memory_map` — Full virtual memory layout with protection and module info
-- `get_registers` / `set_register` — GP, flags, segment, debug, FPU/SSE registers
-- `get_call_stack` — Backtrace with return addresses, module names, and symbols
-- `get_threads` / `switch_thread` — Thread enumeration and context switching
-
-### Static & Dynamic Analysis (10 tools)
-
-- `disassemble` — With metadata (is_call, is_jump, reference targets, comments)
-- `analyze_function` — Boundaries, size, call graph (callers + callees), leaf detection
-- `get_cross_references` — Code and data xrefs (to/from/both)
-- `list_functions` — With module filtering, name search, and pagination
-- `get_modules` / `get_imports` / `get_exports` — With DLL and function name filters
-- `find_strings` — ASCII + Unicode with content filtering and min-length control
-- `get_pe_header` — Full PE structure: DOS/NT headers, sections, data directories, entropy
-- `trace_execution` — Record instruction trace with optional register snapshots
-
-### Security Analysis (5 tools)
-
-- `detect_packing` — Entropy analysis, known packer signatures, import count heuristics, confidence scoring
-- `analyze_suspicious_apis` — Cross-reference imports against 100+ malware-associated APIs in 10 categories
-- `detect_anti_debug` — IsDebuggerPresent, timing checks, PEB flags, TLS callbacks, int 2D/3, with bypass suggestions
-- `check_section_anomalies` — W+X sections, unusual names, zero raw-size, high entropy detection
-- `generate_security_report` — Consolidated first-pass triage of all security checks with overall risk level
-
-**Total: 41 tools**
-
-## Prerequisites
-
-- **Windows** (x64dbg is Windows-only)
-- **Node.js** ≥ 20
-- **Python 3.10+** installed system-wide (both x64 and x86 builds if you debug 32-bit targets)
-- **CMake 3.15+** + MSVC or MinGW — only needed to build the C loader from source (pre-built binaries are included in the npm package)
-
-> x64dbg itself is **downloaded automatically** by `npm install` if not already present.
-> The `iced_x86` Python package is also installed automatically into each detected Python (`PYTHON_HOME_X64` / `PYTHON_HOME_X86`); the bridge falls back to the x64dbg disasm API if the install fails.
+`npm install` downloads x64dbg automatically if it is not already available. The `iced_x86` Python package is also installed automatically into detected Python environments; if that installation fails, the bridge falls back to x64dbg's own disassembly APIs.
 
 ## Installation
 
-### From npm (recommended)
+### Global npm install
 
 ```bash
 npm install -g x64dbg-mcp
 ```
 
-`postinstall` runs automatically and handles:
+The global install path is the simplest one. Its `postinstall` step handles the usual setup work:
 
-| Step         | What happens                                                                                |
-| ------------ | ------------------------------------------------------------------------------------------- |
-| x64dbg       | Downloads latest snapshot from GitHub if not found locally                                  |
-| Plugin files | Deploys `.dp64` / `.dp32` loader + Python bridge to x64dbg plugins/                     |
-| Bridge auth  | Generates a random `BRIDGE_AUTH_TOKEN` and writes `x64dbg_mcp_bridge.token` to plugins/ |
-| Python       | Detects Python install dir, sets `PYTHON_HOME_X64` / `PYTHON_HOME_X86`                  |
-| iced_x86     | Installs `iced_x86` into each detected Python (skipped if already importable)           |
-| `.env`     | Creates with all detected settings and defaults                                             |
+| Step | What happens |
+| --- | --- |
+| x64dbg | Downloads the latest snapshot if not found locally |
+| Plugin files | Deploys the loader and Python bridge files into the x64dbg plugins directories |
+| Bridge auth | Generates `BRIDGE_AUTH_TOKEN` and writes `x64dbg_mcp_bridge.token` |
+| Python | Detects Python install paths and records `PYTHON_HOME_X64` / `PYTHON_HOME_X86` |
+| `iced_x86` | Installs it into detected Python environments if needed |
+| `.env` | Creates a config file with detected values and defaults |
+
+Before continuing, review the configuration values in the next section if your x64dbg install path, Python install path, or HTTP port should differ from the detected defaults.
+
+Then run:
 
 ```bash
-npm install -g x64dbg-mcp
-x64dbg-mcp setup          # interactive config wizard
-x64dbg-mcp install-plugin # compile C loader, deploy to x64dbg
-x64dbg-mcp doctor         # verify everything is in order
-x64dbg-mcp                # start MCP server
+x64dbg-mcp setup
+x64dbg-mcp doctor
+x64dbg-mcp
 ```
 
-### From source
+If you need to rebuild and redeploy the loader manually, use:
 
 ```bash
-git clone https://github.com/your-org/x64dbg-mcp
+x64dbg-mcp install-plugin
+```
+
+### Source checkout
+
+Use this path if you are developing on the project itself:
+
+```bash
+git clone https://github.com/ouonet/x64dbg-mcp.git
 cd x64dbg-mcp
-npm install             # downloads x64dbg, deploys .py files, writes .env
-npm run build           # compile TypeScript → dist/
-x64dbg-mcp install-plugin  # compile C loader (x64+x32), deploy to x64dbg
-x64dbg-mcp doctor       # verify
+npm install
+npm run build
 ```
 
-> **x64dbg already installed elsewhere?** Set `X64DBG_PATH` in `.env` before running
-> `npm run install-plugin`, or pass `-X64dbgPath "C:\path\to\x64dbg"` to the script.
+Then review the configuration section below, especially if `X64DBG_PATH`, Python paths, or the default HTTP port need to change.
 
-### Manual plugin installation (alternative to `install-plugin`)
+```bash
+npm run setup
+npm run install-plugin
+npm run doctor
+npm start
+```
+
+To run HTTP mode from a source checkout:
+
+```powershell
+node .\dist\server.js --transport streamable-http --host localhost --port 3000
+```
+
+If you want the `x64dbg-mcp` command in a source checkout too, run `npm link` after `npm run build`.
+
+If x64dbg already exists in a non-default location, set `X64DBG_PATH` in `.env` before `npm run install-plugin`.
+
+### Manual plugin installation
+
+Most users should not need this. Use it only if you want to build and copy the loader manually instead of running `install-plugin`.
 
 ```powershell
 cd plugin\loader
@@ -142,18 +131,17 @@ Copy-Item ..\x64dbg_mcp_bridge.py                $p32
 Copy-Item ..\x64dbg_bridge_sdk.py                $p32
 ```
 
-`npm run install-plugin` does all of the above (both architectures by default). Pass `-No32` to skip 32-bit.
+`npm run install-plugin` performs the same work for both architectures by default. Pass `-No32` if you want to skip the 32-bit build.
 
 ## Configuration
 
-`npm install` creates `.env` automatically. To adjust, edit it directly or run `x64dbg-mcp setup` for an interactive wizard.
+`npm install` creates `.env` automatically. Edit that file directly, or run `setup` again if you want the interactive flow.
 
 ```env
 # x64dbg path (auto-detected)
 X64DBG_PATH=C:\x64dbg
 
-# Python install directories — avoids copying DLLs into the plugins folder.
-# The C loader checks these first; falls back to PATH if unset.
+# Python install directories used by the C loader
 PYTHON_HOME_X64=C:\Python314
 PYTHON_HOME_X86=C:\Python312-32
 
@@ -162,37 +150,57 @@ BRIDGE_HOST=127.0.0.1
 BRIDGE_PORT=27042
 BRIDGE_AUTH_TOKEN=<auto-generated>
 
+# MCP transport defaults
+MCP_TRANSPORT=stdio
+MCP_HTTP_HOST=127.0.0.1
+MCP_HTTP_PORT=3000
+
 # Logging / limits
 LOG_LEVEL=info
 MAX_SESSIONS=1
 SESSION_TIMEOUT_MS=3600000
 ```
 
-| Variable               | Default             | Description                                                     |
-| ---------------------- | ------------------- | --------------------------------------------------------------- |
-| `X64DBG_PATH`        | auto-detected       | x64dbg installation directory                                   |
-| `PYTHON_HOME_X64`    | *(auto-detected)* | Python 64-bit dir — loader Priority 1; no DLL copy needed      |
-| `PYTHON_HOME_X86`    | *(auto-detected)* | Python 32-bit dir — used by `.dp32` loader                   |
-| `BRIDGE_PORT`        | `27042`           | TCP port the Python bridge listens on                           |
-| `BRIDGE_AUTH_TOKEN`  | auto-generated      | Shared secret for localhost MCP ↔ bridge requests              |
-| `LOG_LEVEL`          | `info`            | `error` / `warn` / `info` / `debug`                     |
-| `MAX_SESSIONS`       | `1`               | Single-session limit for the current x64dbg bridge architecture |
-| `SESSION_TIMEOUT_MS` | `3600000`         | Session idle timeout (ms)                                       |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `X64DBG_PATH` | auto-detected | x64dbg installation directory |
+| `PYTHON_HOME_X64` | auto-detected | Preferred Python 64-bit install directory |
+| `PYTHON_HOME_X86` | auto-detected | Preferred Python 32-bit install directory |
+| `BRIDGE_HOST` | `127.0.0.1` | TCP host for the local bridge |
+| `BRIDGE_PORT` | `27042` | TCP port for the local bridge |
+| `BRIDGE_AUTH_TOKEN` | auto-generated | Shared secret for MCP to bridge requests |
+| `MCP_TRANSPORT` | `stdio` | Default startup transport: `stdio` or `streamable-http` |
+| `MCP_HTTP_HOST` | `127.0.0.1` | Default HTTP bind host |
+| `MCP_HTTP_PORT` | `3000` | Default HTTP listen port |
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
+| `MAX_SESSIONS` | `1` | Active session limit for the current bridge architecture |
+| `SESSION_TIMEOUT_MS` | `3600000` | Idle session timeout in milliseconds |
 
-The recommended path is to let the MCP server auto-launch x64dbg. If you manually start x64dbg,
-keep the deployed `x64dbg_mcp_bridge.token` file in the plugins directory so the bridge can enforce
-the same token as the MCP server.
+If you manually start x64dbg outside the MCP flow, keep the deployed `x64dbg_mcp_bridge.token` file in the plugins directory so the bridge enforces the same token as the MCP server.
 
-## Usage
+## Use With Your MCP Host
 
-### Configure your AI host
+> **Note:** You do not need to pre-launch x64dbg manually. The MCP server auto-launches the correct debugger when you call `load_executable` or `attach_to_process`.
 
-> **Note:** You no longer need to manually start x64dbg. The MCP server auto-launches
-> the correct debugger when you call `load_executable` or `attach_to_process`.
+### STDIO host configuration
+
+Use STDIO when your MCP host can spawn a local process.
 
 #### Claude Desktop
 
-Add to `claude_desktop_config.json`:
+If you installed the package globally:
+
+```json
+{
+  "mcpServers": {
+    "x64dbg-mcp": {
+      "command": "x64dbg-mcp"
+    }
+  }
+}
+```
+
+If you are using a source checkout instead:
 
 ```json
 {
@@ -219,111 +227,150 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Start debugging
+### Streamable HTTP
 
-Ask your AI assistant:
+Use Streamable HTTP when you want to start x64dbg-mcp once and let an AI tool connect to it through a fixed local URL.
 
-> "Load C:\samples\target.exe and analyze it for suspicious behavior"
+Start the server first.
 
-The AI will use the MCP tools to:
+If you installed the package globally:
 
-1. `load_executable` → load the binary
-2. `generate_security_report` → run all security checks
-3. `disassemble` → inspect suspicious code
-4. `set_breakpoint` + `continue_execution` → dynamic analysis
-
-For an already-running process, ask instead:
-
-> "Attach to PID 1234 and inspect the current thread"
-
-The AI can then use `attach_to_process`, `get_call_stack`, `get_registers`,
-`set_breakpoint`, and `detach_session` without terminating the target process.
-
-## Example Workflows
-
-### Process Attachment
-
-```
-User: "Debug PID 1234 that's already running"
-AI:   attach_to_process(1234) → pause_execution → get_call_stack →
-      disassemble → set_breakpoint → continue_execution
+```powershell
+x64dbg-mcp --transport streamable-http --host localhost --port 3000
 ```
 
-To leave the target running after an attach, call `detach_session(sessionId)`.
-Use `terminate_session(sessionId)` only when you want to stop the target process.
+If you are running from a source checkout:
 
-### Crash Analysis
-
-```
-User: "My program crashes at startup, help me debug it"
-AI:   load_executable → continue_execution → get_call_stack →
-      read_memory → get_registers → disassemble
+```powershell
+node .\dist\server.js --transport streamable-http --host localhost --port 3000
 ```
 
-### Malware Triage
+Then connect your AI tool to this MCP endpoint:
 
-```
-User: "Analyze this suspicious binary"
-AI:   load_executable → generate_security_report →
-      analyze_suspicious_apis → detect_anti_debug →
-      find_strings → get_imports
+```text
+http://localhost:3000/mcp
 ```
 
-### Reverse Engineering
+Below are direct configuration examples for common AI tools.
 
-```
-User: "Find the license check function"
-AI:   load_executable → find_strings (filter: "license") →
-      get_cross_references → analyze_function →
-      disassemble → trace_execution
+#### Claude Code
+
+Create a `.mcp.json` file in the project root:
+
+```json
+{
+  "mcpServers": {
+    "x64dbg-mcp": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
 ```
 
-## Development
+Or add the same server to Claude Code with its CLI:
 
 ```bash
-npm run ci                        # Full local pipeline: build + lint + test + python + C loader
-npm run ci -- --no-loader         # Skip C loader (no CMake needed)
-npm run dev                       # Sync .py files to bundled x64dbg, then run via tsx
-npm run sync-plugin               # Manually sync plugin/*.py → x64dbg/release/x*/plugins/
-npm run setup-x64dbg              # Download/update bundled x64dbg snapshot
-npm run setup-x64dbg -- --force   # Force re-download
-npm run setup-x64dbg -- --tag snapshot_2024-09-10_00-00  # Pin to specific version
-npm run build                     # Compile TypeScript → dist/
-npm run lint                      # ESLint src/**/*.ts
-npm test                          # Unit tests (no x64dbg required)
-npm run test:e2e                  # SDK-based end-to-end smoke test
-npm run inspector                 # Launch MCP Inspector UI
-npm run clean                     # Remove dist/
+claude mcp add --transport http x64dbg-mcp http://localhost:3000/mcp
 ```
 
-> **MCP Inspector note**: `npm run inspector` downloads `@modelcontextprotocol/inspector`
-> via `npx` on first run. In restricted network environments set `HTTP_PROXY` / `HTTPS_PROXY`
-> before running, or install it globally first: `npm install -g @modelcontextprotocol/inspector`.
+#### Windsurf / Cascade
 
-`npm run dev` automatically syncs Python source files to the bundled x64dbg via the `predev`
-hook before starting the server — no manual copy needed during development.
+Edit `~/.codeium/windsurf/mcp_config.json`:
 
-## Testing
+```json
+{
+  "mcpServers": {
+    "x64dbg-mcp": {
+      "serverUrl": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+If you already have other MCP servers configured in that file, just add the `x64dbg-mcp` entry under `mcpServers`.
+
+If your AI tool does **not** support remote HTTP MCP servers and only knows how to launch a local command, use the STDIO setup above instead.
+
+CLI flags override `MCP_TRANSPORT`, `MCP_HTTP_HOST`, and `MCP_HTTP_PORT` from the environment. The legacy `MCP_TRANSPORT=http` alias is still accepted for compatibility.
+
+## Typical Prompts
+
+These are good examples of the kinds of requests the MCP server is built to support:
+
+- "Load `C:\samples\target.exe` and analyze it for suspicious behavior"
+- "Attach to PID 1234 and inspect the current thread"
+- "Find the license check function"
+- "Generate a first-pass malware triage report"
+
+Typical tool flows behind those prompts look like this:
+
+| Goal | Typical tools |
+| --- | --- |
+| Load and debug a binary | `load_executable`, `continue_execution`, `set_breakpoint`, `disassemble` |
+| Attach to a live process | `attach_to_process`, `pause_execution`, `get_call_stack`, `get_registers`, `detach_session` |
+| Malware triage | `generate_security_report`, `analyze_suspicious_apis`, `detect_anti_debug`, `find_strings` |
+| Reverse engineering | `find_strings`, `get_cross_references`, `analyze_function`, `trace_execution` |
+
+## Capabilities
+
+The server exposes **42 tools** across four practical groups.
+
+| Group | Scope |
+| --- | --- |
+| Core debugging | load or attach, control execution, manage breakpoints, inspect session state |
+| Memory and registers | read and write memory, inspect registers, switch threads, walk call stacks |
+| Analysis | disassembly, function analysis, cross references, modules, imports, exports, strings, traces |
+| Security triage | packing checks, suspicious APIs, anti-debug detection, section anomalies, consolidated reports |
+
+Representative tools include `load_executable`, `attach_to_process`, `get_status`, `read_memory`, `disassemble`, `analyze_function`, and `generate_security_report`.
+
+## Architecture
+
+```text
+┌─────────────────┐  STDIO / HTTP     ┌──────────────────┐  TCP (JSON)  ┌──────────────┐
+│  AI Assistant   │ ◄───────────────► │  MCP Server      │ ◄──────────► │  x64dbg      │
+│  (Claude, etc.) │                   │  (Node.js / TS)  │  port 27042  │  + Bridge    │
+└─────────────────┘                   └──────────────────┘              │    Plugin    │
+                                                                        └──────────────┘
+```
+
+At a high level, the MCP server in `src/` speaks STDIO or Streamable HTTP to an AI client, then forwards requests over a local TCP bridge to the plugin running inside x64dbg. The plugin side is a lightweight C loader plus Python bridge that translates those requests into x64dbg Bridge SDK calls.
+
+## Development And Testing
+
+Development commands:
 
 ```bash
-# TypeScript unit tests (SessionManager, BridgeClient, launcher, config)
+npm run ci
+npm run ci -- --no-loader
+npm run dev
+npm run sync-plugin
+npm run setup-x64dbg
+npm run setup-x64dbg -- --force
+npm run build
+npm run lint
+npm run clean
+```
+
+Testing commands:
+
+```bash
 npm test
-
-# Python bridge offline tests (no x64dbg required)
 python plugin/tests/test_bridge.py
-
-# SDK-based end-to-end smoke test
 npm run test:e2e
-
-# Full environment check
-x64dbg-mcp doctor
+npm run test:http-smoke
+npm run doctor
 ```
 
-Reusable verifier scripts live under `test/e2e/`. They no longer assume a local sample
-binary or process name. Provide one of these explicitly when running them:
+`npm run dev` automatically syncs Python files into the bundled x64dbg checkout before starting the server.
 
-- `TARGET_EXE=C:\path\to\sample.exe` for load-based verifiers
-- `TARGET_PID=1234` or `TARGET_PROCESS_NAME=notepad` for attach-based verifiers
+`npm run inspector` launches MCP Inspector. On first run it downloads `@modelcontextprotocol/inspector` via `npx`, so restricted environments may need `HTTP_PROXY` / `HTTPS_PROXY` or a global install.
+
+Reusable verifier scripts live under `test/e2e/`. They require an explicit target:
+
+- `TARGET_EXE=C:\path\to\sample.exe` for load-based verification
+- `TARGET_PID=1234` or `TARGET_PROCESS_NAME=notepad` for attach-based verification
 
 Examples:
 
@@ -335,59 +382,55 @@ $env:TARGET_PROCESS_NAME = "notepad"
 node test/e2e/verify_attach_chain.mjs
 ```
 
-CI (`.github/workflows/ci.yml`) runs all three jobs on every push:
-
-- `ts`: build + lint + test on Node 20 and 22
-- `python`: syntax check + logic tests on Python 3.11
-- `loader`: CMake build (x64 + x32), artifacts saved to `plugin/loader/prebuilt/`
-
-On tagged releases (`v*`), CI also publishes to npm with the prebuilt binaries included.
+CI in `.github/workflows/ci.yml` runs TypeScript, Python, and loader-build jobs on every push. On tagged releases (`v*`), it also publishes the npm package with the prebuilt loader binaries included.
 
 ## Project Structure
 
-```
+```text
 x64dbg-mcp/
 ├── src/
-│   ├── server.ts              # Entry point, MCP server, graceful shutdown
-│   ├── bridge.ts              # TCP client — reconnect, request/response tracking
-│   ├── launcher.ts            # PE arch detection, debugger spawn, bridge poll
-│   ├── session.ts             # Session lifecycle & GC
-│   ├── config.ts              # Config from env / .env
-│   ├── logger.ts              # Winston logger (stderr only)
+│   ├── server.ts              # Entry point and transport bootstrap
+│   ├── cli.ts                 # CLI parsing for transport/host/port
+│   ├── httpServer.ts          # Streamable HTTP server and MCP session handling
+│   ├── mcpServer.ts           # Shared MCP server factory and tool registration
+│   ├── bridge.ts              # TCP client for the x64dbg bridge
+│   ├── launcher.ts            # PE detection and debugger startup
+│   ├── session.ts             # Session lifecycle and garbage collection
+│   ├── config.ts              # Env-backed configuration loading
+│   ├── errors.ts              # Shared error helpers
+│   ├── logger.ts              # Winston logger
 │   ├── types.ts               # Shared TypeScript types
 │   └── tools/
-│       ├── index.ts           # Tool registration barrel
-│       ├── debug.ts           # Core debugging (18 tools)
-│       ├── memory.ts          # Memory & registers (9 tools)
-│       ├── analysis.ts        # Analysis (10 tools)
-│       └── security.ts        # Security analysis (5 tools)
+│       ├── debug.ts
+│       ├── memory.ts
+│       ├── analysis.ts
+│       ├── security.ts
+│       └── index.ts
 ├── plugin/
-│   ├── x64dbg_mcp_bridge.py   # TCP server + handler dispatch
-│   ├── x64dbg_bridge_sdk.py   # ctypes bindings to x64bridge.dll
-│   ├── tests/
-│   │   └── test_bridge.py     # Offline unit tests (no x64dbg required)
+│   ├── x64dbg_mcp_bridge.py   # Python bridge running inside x64dbg
+│   ├── x64dbg_bridge_sdk.py   # ctypes wrapper for x64bridge.dll
 │   ├── loader/
-│   │   ├── x64dbg_mcp_loader.c     # C plugin — embeds Python 3
+│   │   ├── x64dbg_mcp_loader.c
 │   │   ├── CMakeLists.txt
-│   │   └── prebuilt/               # Pre-built .dp64/.dp32 (populated by CI)
+│   │   └── prebuilt/
+│   ├── tests/
+│   │   └── test_bridge.py
 │   └── README.md
 ├── scripts/
-│   ├── postinstall.mjs        # Runs after npm install — downloads x64dbg, deploys plugin, writes .env
-│   ├── setup-x64dbg.mjs       # npm run setup-x64dbg — download/update x64dbg snapshot
-│   ├── setup.mjs              # x64dbg-mcp setup — interactive .env wizard
-│   ├── doctor.mjs             # x64dbg-mcp doctor — pre-flight diagnostics
-│   ├── sync-plugin.mjs        # npm run sync-plugin — sync .py to bundled x64dbg (predev hook)
-│   ├── ci.mjs                 # npm run ci — local CI pipeline
-│   ├── install-plugin.ps1     # npm run install-plugin — compile C loader & deploy
-│   └── manual/                # Manual debugger helpers not used by CI
+│   ├── setup.mjs
+│   ├── doctor.mjs
+│   ├── install-plugin.mjs
+│   ├── install-plugin.ps1
+│   ├── postinstall.mjs
+│   ├── prepack.mjs
+│   ├── setup-x64dbg.mjs
+│   ├── sync-plugin.mjs
+│   ├── ci.mjs
+│   └── manual/
 ├── test/
-│   ├── basic.test.ts          # Node.js built-in test runner
-│   └── e2e/                   # Reusable end-to-end verification scripts
-├── .github/
-│   └── workflows/
-│       └── ci.yml             # CI + npm publish on tag
-├── eslint.config.mjs
-├── tsconfig.json
+│   ├── basic.test.ts
+│   └── e2e/
+├── x64dbg/                    # Bundled x64dbg snapshot used in development/tests
 ├── package.json
 ├── .env.example
 └── README.md
@@ -404,5 +447,4 @@ MIT
 - Code of conduct: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - Bug reports and feature requests: use the GitHub templates under `.github/ISSUE_TEMPLATE/`
 
-For non-sensitive questions or usage issues, open a GitHub issue.
-For vulnerabilities, follow the private reporting process in `SECURITY.md` instead of opening a public issue.
+For non-sensitive questions or usage issues, open a GitHub issue. For vulnerabilities, follow the private reporting process in `SECURITY.md` instead of opening a public issue.
