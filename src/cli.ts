@@ -103,3 +103,15 @@ export function renderCliUsage(): string {
     "  - CLI arguments override MCP_TRANSPORT / MCP_HTTP_HOST / MCP_HTTP_PORT from the environment.",
   ].join("\n");
 }
+
+export interface ServiceModeArgs {
+  serviceArgv: string[];
+}
+
+export function detectServiceMode(argv: string[]): ServiceModeArgs | null {
+  if (argv.length === 0) return null;
+  if (argv[0] === "service") {
+    return { serviceArgv: argv.slice(1) };
+  }
+  return null;
+}

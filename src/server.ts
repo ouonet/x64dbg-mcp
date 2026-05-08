@@ -15,7 +15,7 @@
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 import path from "path";
-import { parseCliRuntimeOverrides, renderCliUsage } from "./cli.js";
+import { detectServiceMode, parseCliRuntimeOverrides, renderCliUsage } from "./cli.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +32,14 @@ if (subcommand === "setup" || subcommand === "doctor" || subcommand === "install
     stdio: "inherit",
   });
   process.exit(result.status ?? 1);
+}
+
+const rawArgv = process.argv.slice(2);
+const serviceMode = detectServiceMode(rawArgv);
+if (serviceMode) {
+  const { runService } = await import("./service/router.js");
+  const exitCode = await runService(serviceMode.serviceArgv);
+  process.exit(exitCode);
 }
 
 let cliOverrides: ReturnType<typeof parseCliRuntimeOverrides>;
