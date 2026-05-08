@@ -651,3 +651,45 @@ describe("logToolCall helper", async () => {
     assert.doesNotThrow(() => logToolCall("read_memory", "sess-1", 5, "some error"));
   });
 });
+
+// ─── BridgeRegistry ───────────────────────────────────────────────────────────
+
+describe("BridgeRegistry", async () => {
+  const { BridgeRegistry } = await importFresh<
+    typeof import("../src/bridgeRegistry.js")
+  >("src/bridgeRegistry.ts");
+  const { BridgeClient } = await importFresh<
+    { BridgeClient: typeof import("../src/bridge.js").BridgeClient }
+  >("src/bridge.ts");
+
+  test("set/get round-trip", () => {
+    const r = new BridgeRegistry();
+    const c = new BridgeClient("127.0.0.1", 19998);
+    r.set("sess-1", c);
+    assert.equal(r.get("sess-1"), c);
+  });
+
+  test("get throws E_SESSION_NOT_FOUND for unknown id", () => {
+    const r = new BridgeRegistry();
+    assert.throws(() => r.get("ghost"), /E_SESSION_NOT_FOUND|No bridge for/);
+  });
+
+  test("delete removes the entry", async () => {
+    const r = new BridgeRegistry();
+    const c = new BridgeClient("127.0.0.1", 19997);
+    r.set("sess-2", c);
+    await r.delete("sess-2");
+    assert.throws(() => r.get("sess-2"));
+  });
+
+  test("list returns all clients", () => {
+    const r = new BridgeRegistry();
+    const c1 = new BridgeClient("127.0.0.1", 1);
+    const c2 = new BridgeClient("127.0.0.1", 2);
+    r.set("a", c1);
+    r.set("b", c2);
+    const all = r.list();
+    assert.equal(all.length, 2);
+    assert.ok(all.includes(c1) && all.includes(c2));
+  });
+});
