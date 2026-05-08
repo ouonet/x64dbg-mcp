@@ -80,14 +80,21 @@ export function detectPEArchitecture(
 }
 
 /**
- * Pick a free TCP port in the dynamic / private range (49152–65535).
+ * Pick a free TCP port for a per-session bridge listener.
+ *
+ * Default range 30000–44999 sits in the IANA registered range and below the
+ * Windows default TCP ephemeral pool (49152–65535). Picking inside the
+ * ephemeral pool produced false positives in waitForBridge: a port briefly
+ * used by an unrelated outbound connection looked "reachable" but refused
+ * the next connect a few hundred ms later.
+ *
  * Probes by binding a throwaway server; the first successful bind wins.
  *
  * @throws McpError(E_PORT_EXHAUSTED) after `attempts` random failures.
  */
 export async function pickFreePort(
-  min = 49152,
-  max = 65535,
+  min = 30000,
+  max = 44999,
   attempts = 20,
 ): Promise<number> {
   for (let i = 0; i < attempts; i++) {
@@ -302,6 +309,10 @@ export async function launchDebuggerOnPort(
 
   logger.info(`Debugger spawned (pid=${child.pid}, port=${port}), waiting for bridge...`);
   await waitForBridge(config.bridgeHost, port);
+  // The TCP probe in waitForBridge can succeed before the Python bridge's
+  // accept loop is fully primed; give it a brief settle window so the next
+  // connect (the real BridgeClient) is not refused.
+  await new Promise((r) => setTimeout(r, 300));
 
   return { arch, child };
 }
@@ -409,6 +420,9 @@ export async function launchDebuggerForAttachOnPort(
 
   logger.info(`Debugger spawned (pid=${child.pid}, port=${port}), waiting for bridge...`);
   await waitForBridge(config.bridgeHost, port);
+  // Same settle window as launchDebuggerOnPort to ride out the bridge's
+  // listen-vs-accept race.
+  await new Promise((r) => setTimeout(r, 300));
 
   return child;
 }

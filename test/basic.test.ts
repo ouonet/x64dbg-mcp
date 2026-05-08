@@ -117,9 +117,9 @@ describe("pickFreePort", async () => {
     typeof import("../src/launcher.js")
   >("src/launcher.ts");
 
-  test("returns a port in the high range", async () => {
+  test("returns a port in the registered range", async () => {
     const p = await pickFreePort();
-    assert.ok(p >= 49152 && p <= 65535, `port out of range: ${p}`);
+    assert.ok(p >= 30000 && p <= 44999, `port out of range: ${p}`);
   });
 
   test("returned port is actually bindable", async () => {

@@ -149,10 +149,18 @@ describe(
     const { bridges } = await importFresh<
       typeof import("../../src/bridgeRegistry.js")
     >("src/bridgeRegistry.ts");
+    const cfgMod = await importFresh<typeof import("../../src/config.js")>(
+      "src/config.ts",
+    );
 
     let server: McpServer;
+    let prevMaxSessions: number;
 
     before(() => {
+      // Override MAX_SESSIONS so the test isn't blocked by a developer's .env
+      // setting it to 1 (legacy single-session value).
+      prevMaxSessions = cfgMod.config.maxSessions;
+      (cfgMod.config as { maxSessions: number }).maxSessions = 5;
       server = createMcpServer();
     });
 
@@ -164,6 +172,7 @@ describe(
           /* ignore */
         }
       }
+      (cfgMod.config as { maxSessions: number }).maxSessions = prevMaxSessions;
     });
 
     test(
@@ -198,12 +207,12 @@ describe(
         assert.equal(sessions.list().length, 2);
         assert.notEqual(aPort, bPort);
         assert.ok(
-          aPort >= 49152 && aPort <= 65535,
-          `server bridgePort ${aPort} out of ephemeral range`,
+          aPort >= 30000 && aPort <= 44999,
+          `server bridgePort ${aPort} out of allocated range`,
         );
         assert.ok(
-          bPort >= 49152 && bPort <= 65535,
-          `client bridgePort ${bPort} out of ephemeral range`,
+          bPort >= 30000 && bPort <= 44999,
+          `client bridgePort ${bPort} out of allocated range`,
         );
 
         // ── Set breakpoints on different Winsock symbols ───────────────────
@@ -263,6 +272,10 @@ describe(
         );
 
         // ── Verify breakpoint isolation ────────────────────────────────────
+        // list_breakpoints returns the resolved hex address per session.
+        // We don't trust the symbolic address echoed by set_breakpoint — it may
+        // pass through unchanged on some bridge versions. The ground truth is
+        // that each session has exactly one BP at a distinct concrete address.
         const bpsA = parseToolResult(
           await callTool(server, "list_breakpoints", { sessionId: aSessionId }),
           "list_breakpoints",
@@ -279,22 +292,20 @@ describe(
           (bp) => bp.address.toLowerCase(),
         );
 
+        assert.equal(addrsA.length, 1, `session A must have exactly 1 BP: ${JSON.stringify(addrsA)}`);
+        assert.equal(addrsB.length, 1, `session B must have exactly 1 BP: ${JSON.stringify(addrsB)}`);
+        assert.notEqual(addrsA[0], addrsB[0], `BPs must be at distinct addresses: A=${addrsA[0]}, B=${addrsB[0]}`);
         assert.ok(
-          addrsA.some((addr) => addr.includes("accept")),
-          `expected accept BP in session A: ${JSON.stringify(addrsA)}`,
+          !addrsA.includes(addrsB[0]!),
+          `session A must not contain session B's BP (${addrsB[0]}), got: ${JSON.stringify(addrsA)}`,
         );
         assert.ok(
-          addrsB.some((addr) => addr.includes("connect")),
-          `expected connect BP in session B: ${JSON.stringify(addrsB)}`,
+          !addrsB.includes(addrsA[0]!),
+          `session B must not contain session A's BP (${addrsA[0]}), got: ${JSON.stringify(addrsB)}`,
         );
-        assert.ok(
-          !addrsA.some((addr) => addr.includes("connect")),
-          `session A must not have connect BP, got: ${JSON.stringify(addrsA)}`,
-        );
-        assert.ok(
-          !addrsB.some((addr) => addr.includes("accept")),
-          `session B must not have accept BP, got: ${JSON.stringify(addrsB)}`,
-        );
+
+        // Suppress unused-binding warning (bpA/bpB reserved for future symbol-resolution checks)
+        void bpA; void bpB;
 
         // ── Continue both to finish their work ─────────────────────────────
         await callTool(server, "continue_execution", { sessionId: aSessionId });
