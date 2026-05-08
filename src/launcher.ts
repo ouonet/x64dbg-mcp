@@ -23,6 +23,10 @@ const IMAGE_FILE_MACHINE_AMD64 = 0x8664; // x64
 const IMAGE_FILE_MACHINE_ARM64 = 0xaa64; // ARM64 — not supported by x64dbg
 const IMAGE_FILE_MACHINE_ARMNT = 0x01c4; // ARM Thumb-2 — not supported by x64dbg
 
+/** Per-session ChildProcess tracking for spawned x64dbg/x32dbg instances. */
+const debuggerProcesses = new Map<string, ChildProcess>();
+
+/** Legacy single-instance handle (kept for the deprecated singleton path). */
 let debuggerProcess: ChildProcess | null = null;
 
 /**
@@ -258,9 +262,54 @@ export async function launchDebugger(
 }
 
 /**
+ * Multi-session variant: launch x64dbg on a specific bridge port and return
+ * both the detected architecture and the ChildProcess handle.
+ *
+ * Caller is responsible for tracking the ChildProcess (typically by passing
+ * it into rememberDebuggerForSession after the session is registered).
+ */
+export async function launchDebuggerOnPort(
+  targetExe: string,
+  port: number,
+): Promise<{ arch: "x86" | "x64"; child: ChildProcess }> {
+  if (!fs.existsSync(targetExe)) {
+    throw new Error(`Target executable not found: ${targetExe}`);
+  }
+
+  const arch = detectPEArchitecture(targetExe);
+  const dbgExe = resolveDebuggerExe(arch);
+
+  logger.info(`Detected ${arch} PE, launching ${path.basename(dbgExe)} on port ${port}`);
+  logger.info(`Debugger: ${dbgExe}`);
+  logger.info(`Target:   ${targetExe}`);
+
+  const child = spawn(dbgExe, [], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+    env: { ...process.env, BRIDGE_PORT: port.toString() },
+  });
+
+  child.on("error", (err: Error) => {
+    logger.error(`Debugger process error (port ${port}): ${err.message}`);
+  });
+
+  child.on("exit", (code: number | null) => {
+    logger.info(`Debugger process exited (port ${port}, code ${code})`);
+  });
+
+  child.unref();
+
+  logger.info(`Debugger spawned (pid=${child.pid}, port=${port}), waiting for bridge...`);
+  await waitForBridge(config.bridgeHost, port);
+
+  return { arch, child };
+}
+
+/**
  * Launch x64dbg (or x32dbg) for attaching to a running process by PID.
  * Similar to launchDebugger but takes a PID and architecture instead of an executable.
- * 
+ *
  * @param pid Process ID to attach to
  * @param arch Target process architecture ("x86" or "x64")
  * @returns The target process architecture.
@@ -325,12 +374,99 @@ export async function launchDebuggerForAttach(
 }
 
 /**
- * Kill the debugger process if it is still running.
- *
- * Set KEEP_DEBUGGER=1 in the environment to skip the kill — useful when
- * the user wants to preserve an in-progress x64dbg analysis session after
- * the MCP host disconnects.
+ * Multi-session attach variant: launch x64dbg/x32dbg on a specific bridge port
+ * for attaching to a running process by PID. Returns the ChildProcess handle.
  */
+export async function launchDebuggerForAttachOnPort(
+  pid: number,
+  arch: "x86" | "x64",
+  port: number,
+): Promise<ChildProcess> {
+  if (!fs.existsSync(config.x64dbgPath)) {
+    throw new Error(`x64dbg installation not found: ${config.x64dbgPath}`);
+  }
+
+  const dbgExe = resolveDebuggerExe(arch);
+
+  logger.info(`Launching ${arch} debugger on port ${port} for attaching to PID ${pid}`);
+
+  const child = spawn(dbgExe, [], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+    env: { ...process.env, BRIDGE_PORT: port.toString() },
+  });
+
+  child.on("error", (err: Error) => {
+    logger.error(`Debugger process error (port ${port}): ${err.message}`);
+  });
+
+  child.on("exit", (code: number | null) => {
+    logger.info(`Debugger process exited (port ${port}, code ${code})`);
+  });
+
+  child.unref();
+
+  logger.info(`Debugger spawned (pid=${child.pid}, port=${port}), waiting for bridge...`);
+  await waitForBridge(config.bridgeHost, port);
+
+  return child;
+}
+
+/**
+ * Track a spawned x64dbg ChildProcess against a sessionId so it can be killed
+ * during session teardown. Call after sessions.create() succeeds.
+ */
+export function rememberDebuggerForSession(sessionId: string, child: ChildProcess): void {
+  debuggerProcesses.set(sessionId, child);
+}
+
+/**
+ * Kill the x64dbg/x32dbg ChildProcess associated with a session, if any.
+ * No-op if KEEP_DEBUGGER=1 or the process already exited.
+ */
+export function killDebuggerForSession(sessionId: string): void {
+  if (process.env.KEEP_DEBUGGER === "1") {
+    logger.info(`KEEP_DEBUGGER=1 — skipping kill for session ${sessionId}`);
+    debuggerProcesses.delete(sessionId);
+    return;
+  }
+  const child = debuggerProcesses.get(sessionId);
+  if (!child) return;
+  if (child.exitCode === null) {
+    logger.info(`Killing debugger for session ${sessionId} (pid=${child.pid})`);
+    try { child.kill(); } catch { /* already dead */ }
+  }
+  debuggerProcesses.delete(sessionId);
+}
+
+/**
+ * Kill all spawned x64dbg/x32dbg processes (used during MCP server shutdown).
+ * Honors KEEP_DEBUGGER=1.
+ */
+export function killAllDebuggers(): void {
+  if (process.env.KEEP_DEBUGGER === "1") {
+    logger.info("KEEP_DEBUGGER=1 — skipping all debugger kills");
+    debuggerProcesses.clear();
+    return;
+  }
+  for (const [sid, child] of debuggerProcesses) {
+    if (child.exitCode === null) {
+      logger.info(`Killing debugger for session ${sid} (pid=${child.pid})`);
+      try { child.kill(); } catch { /* already dead */ }
+    }
+  }
+  debuggerProcesses.clear();
+
+  // Also kill the legacy singleton handle if still alive (transitional)
+  if (debuggerProcess && debuggerProcess.exitCode === null) {
+    logger.info("Killing legacy debugger singleton");
+    try { debuggerProcess.kill(); } catch { /* already dead */ }
+    debuggerProcess = null;
+  }
+}
+
+/** Legacy single-instance kill — kept until a later cleanup task removes the last caller. */
 export function killDebugger(): void {
   if (process.env.KEEP_DEBUGGER === "1") {
     logger.info("KEEP_DEBUGGER=1 — skipping debugger kill");
@@ -343,9 +479,7 @@ export function killDebugger(): void {
   }
 }
 
-/**
- * Returns true if a debugger process was launched by us and is still running.
- */
+/** Legacy state check for the singleton — kept until callers migrate. */
 export function isDebuggerRunning(): boolean {
   return debuggerProcess !== null && debuggerProcess.exitCode === null;
 }
