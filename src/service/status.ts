@@ -24,7 +24,7 @@ function parseScmQueryEx(stdout: string): { state: ServiceState; pid?: number } 
 }
 
 function parseScmQc(stdout: string): { startType: StartType; identityAccount: string } {
-  const startTypeMatch = stdout.match(/START_TYPE\s+:\s+\d+\s+([\w_\(\)\s]+)/);
+  const startTypeMatch = stdout.match(/START_TYPE\s+:\s+\d+\s+([\w_()\s]+)/);
   let startType: StartType = "manual";
   if (startTypeMatch) {
     const raw = startTypeMatch[1].trim();
