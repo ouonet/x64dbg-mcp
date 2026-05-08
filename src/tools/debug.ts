@@ -5,10 +5,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { execSync } from "child_process";
 import { z } from "zod";
-import { bridge } from "../bridge.js";
+import { BridgeClient } from "../bridge.js";
+import { bridges, bridgeFor } from "../bridgeRegistry.js";
 import { sessions } from "../session.js";
 import { logger } from "../logger.js";
-import { killDebugger } from "../launcher.js";
+import { config } from "../config.js";
+import {
+  pickFreePort,
+  launchDebuggerOnPort,
+  launchDebuggerForAttachOnPort,
+  killAllDebuggers,
+  rememberDebuggerForSession,
+  detectProcessArchitecture,
+} from "../launcher.js";
 import type { Breakpoint, BreakpointType } from "../types.js";
 
 /** States in which step/continue operations make sense. */
@@ -74,69 +83,98 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ executablePath, commandLineArgs, breakOnEntry, autoAnalyze }) => {
       try {
-        // Trim accidental leading/trailing whitespace (and surrounding quotes)
-        // that frequently sneaks in when paths are pasted from terminals or chat UIs.
         executablePath = executablePath
           .trim()
           .replace(/^['"]|['"]$/g, "")
           .trim();
 
-        // Guard: only one active debug session at a time.
-        // Sessions in the map are always active — terminated sessions are removed immediately.
-        const active = sessions.list()[0];
-        if (active) {
+        // 1. Cap check
+        if (sessions.list().length >= config.maxSessions) {
+          const active = sessions.list().map((s) =>
+            `${s.id} (${s.executable}, ${s.state})`,
+          ).join(", ");
           return {
             content: [{
               type: "text" as const,
-              text: `Error: A debug session (${active.id}) is already active (state: ${active.state}). Call terminate_session first.`,
+              text: `Error: Reached MAX_SESSIONS=${config.maxSessions}. ` +
+                `Active sessions: ${active}. ` +
+                `Call terminate_session on one before loading a new executable.`,
             }],
             isError: true,
           };
         }
 
-        // Auto-launch: if bridge is not connected, detect arch and spawn debugger
-        let detectedArch: "x86" | "x64" | null = null;
-        if (!bridge.isConnected) {
-          logger.info("Bridge not connected, auto-launching debugger...");
-          detectedArch = await bridge.launchAndConnect(executablePath);
-          logger.info(`Debugger launched (${detectedArch}), bridge connected`);
+        // 2. Allocate a free port
+        const port = await pickFreePort();
+        logger.info(`load_executable: allocated port ${port} for ${executablePath}`);
+
+        // 3. Spawn x64dbg on that port
+        let arch: "x86" | "x64";
+        let child;
+        try {
+          ({ arch, child } = await launchDebuggerOnPort(executablePath, port));
+        } catch (err) {
+          throw new Error(`launchDebuggerOnPort failed: ${err}`);
         }
 
-        const result = await bridge.call<{
+        // 4. Connect a fresh BridgeClient to the new x64dbg
+        const client = new BridgeClient(config.bridgeHost, port);
+        try {
+          await client.connect();
+        } catch (err) {
+          try { child.kill(); } catch { /* ignore */ }
+          throw new Error(`Bridge connect failed on port ${port}: ${err}`);
+        }
+
+        // 5. Tell the bridge to load the executable
+        let result: {
           pid: number;
           architecture: "x86" | "x64";
           entryPoint: string;
           modules: { name: string; base: string; size: string; path: string }[];
-        }>("debug.load", {
-          executablePath,
-          commandLineArgs: commandLineArgs ?? "",
-          breakOnEntry,
-          autoAnalyze,
-        });
+        };
+        try {
+          result = await client.call("debug.load", {
+            executablePath,
+            commandLineArgs: commandLineArgs ?? "",
+            breakOnEntry,
+            autoAnalyze,
+          });
+        } catch (err) {
+          try { await client.disconnect(); } catch { /* ignore */ }
+          try { child.kill(); } catch { /* ignore */ }
+          throw err;
+        }
 
-        const arch = result.architecture || detectedArch || "x64";
-        const session = sessions.create(executablePath, arch, result.pid, 0);
+        // 6. Register session, bridge, and child process atomically
+        const session = sessions.create(
+          executablePath,
+          result.architecture || arch,
+          result.pid,
+          port,
+        );
+        bridges.set(session.id, client);
+        rememberDebuggerForSession(session.id, child);
+
         sessions.updateState(session.id, breakOnEntry ? "paused" : "running");
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  sessionId: session.id,
-                  pid: result.pid,
-                  architecture: arch,
-                  entryPoint: result.entryPoint,
-                  state: session.state,
-                  modulesLoaded: result.modules.length,
-                  autoLaunched: detectedArch !== null,
-                },
-                null,
-                2
-              ),
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                sessionId: session.id,
+                pid: result.pid,
+                architecture: result.architecture || arch,
+                entryPoint: result.entryPoint,
+                state: session.state,
+                modulesLoaded: result.modules.length,
+                bridgePort: port,
+              },
+              null,
+              2,
+            ),
+          }],
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -169,87 +207,87 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ pid, breakOnEntry, autoAnalyze }) => {
       try {
-        // Import here to avoid circular dependencies
-        const { detectProcessArchitecture, launchDebuggerForAttach, isDebuggerRunning } = await import(
-          "../launcher.js"
-        );
-
-        // Check if already at max sessions
-        const activeSessions = sessions.list();
-        if (activeSessions.length > 0) {
-          // We allow reusing existing debugger by stopping and reattaching
-          logger.info(`Detaching from previous session to attach to PID ${pid}`);
-        }
-
-        // Detect target process architecture
-        let targetArch: "x86" | "x64";
-        try {
-          targetArch = detectProcessArchitecture(pid);
-          logger.info(`Detected target process PID ${pid} is ${targetArch}`);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
+        // 1. Cap check
+        if (sessions.list().length >= config.maxSessions) {
+          const active = sessions.list().map((s) =>
+            `${s.id} (${s.executable}, ${s.state})`,
+          ).join(", ");
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error: Could not determine process architecture for PID ${pid}. ${msg}. ` +
-                  `Ensure the process exists and you have permission to query it (may need admin rights).`,
-              },
-            ],
+            content: [{
+              type: "text" as const,
+              text: `Error: Reached MAX_SESSIONS=${config.maxSessions}. ` +
+                `Active sessions: ${active}. ` +
+                `Call terminate_session on one before attaching.`,
+            }],
             isError: true,
           };
         }
 
-        // Auto-launch debugger if not running
-        if (!isDebuggerRunning()) {
-          logger.info(`No debugger running, launching ${targetArch} debugger for PID ${pid}...`);
-          await launchDebuggerForAttach(pid, targetArch);
-          logger.info("Debugger launched");
+        // 2. Detect target architecture
+        let targetArch: "x86" | "x64";
+        try {
+          targetArch = detectProcessArchitecture(pid);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Error: Could not determine process architecture for PID ${pid}. ${msg}.`,
+            }],
+            isError: true,
+          };
         }
 
-        // Create session before calling bridge
-        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid, 0);
-        const sessionId = session.id;
-        sessions.updateState(sessionId, "paused");
+        // 3. Allocate port + spawn debugger
+        const port = await pickFreePort();
+        logger.info(`attach_to_process: allocated port ${port} for PID ${pid}`);
+        const child = await launchDebuggerForAttachOnPort(pid, targetArch, port);
+
+        // 4. Connect bridge
+        const client = new BridgeClient(config.bridgeHost, port);
+        try {
+          await client.connect();
+        } catch (err) {
+          try { child.kill(); } catch { /* ignore */ }
+          throw err;
+        }
+
+        // 5. Register and tell bridge to attach
+        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid, port);
+        bridges.set(session.id, client);
+        rememberDebuggerForSession(session.id, child);
 
         try {
-          const result = await bridge.call<{
+          const result = await client.call<{
             pid: number;
             architecture: string;
             entryPoint: string;
             modules: Array<{ name: string; base: string; size: number }>;
           }>("debug.attach", {
-            sessionId,
+            sessionId: session.id,
             pid,
             breakOnEntry,
             autoAnalyze,
           }, 90_000);
 
-          sessions.updateState(sessionId, "paused");
-          // Module enumeration is deferred to analysis.getModules, so we don't set them here
-          // Just keep the modules array empty
+          sessions.updateState(session.id, "paused");
 
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify(
-                  {
-                    sessionId,
-                    pid: result.pid,
-                    architecture: result.architecture,
-                    entryPoint: result.entryPoint,
-                    state: "paused",
-                    modulesLoaded: 0,
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                sessionId: session.id,
+                pid: result.pid,
+                architecture: result.architecture,
+                entryPoint: result.entryPoint,
+                state: "paused",
+                modulesLoaded: 0,
+                bridgePort: port,
+              }, null, 2),
+            }],
           };
-        } catch (err: unknown) {
-          sessions.terminate(sessionId);
+        } catch (err) {
+          await sessions.terminate(session.id);
           throw err;
         }
       } catch (err: unknown) {
@@ -278,7 +316,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.updateState(sessionId, "running");
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           reason: string;
           address: string;
           module?: string;
@@ -350,7 +388,7 @@ export function registerDebugTools(server: McpServer): void {
         };
       }
       try {
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           reason: string;
           address: string;
         }>("debug.pause", { sessionId });
@@ -404,7 +442,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.updateState(sessionId, "stepping");
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           disassembly: string;
           module?: string;
@@ -455,7 +493,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.updateState(sessionId, "stepping");
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           disassembly: string;
           module?: string;
@@ -493,7 +531,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.updateState(sessionId, "stepping");
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           disassembly: string;
           returnValue?: string;
@@ -528,7 +566,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.updateState(sessionId, "running");
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           reached: boolean;
           stopAddress: string;
           reason: string;
@@ -585,7 +623,7 @@ export function registerDebugTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           resolved: boolean;
           module?: string;
@@ -647,7 +685,7 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId, address }) => {
       try {
-        await bridge.call("debug.removeBreakpoint", { sessionId, address });
+        await bridgeFor(sessionId).call("debug.removeBreakpoint", { sessionId, address });
         sessions.removeBreakpoint(sessionId, address);
 
         return {
@@ -675,7 +713,7 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId }) => {
       try {
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           breakpoints: Breakpoint[];
         }>("debug.listBreakpoints", { sessionId });
 
@@ -720,27 +758,23 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId }) => {
       try {
-        // Stop the debuggee via bridge (async-safe), then clean up session state.
-        // x64dbg remains alive for the next load_executable call.
-        if (bridge.isConnected) {
-          try {
-            await bridge.call("debug.stop", { sessionId });
-          } catch (err) {
-            logger.warn(`debug.stop failed (continuing cleanup): ${err}`);
+        try {
+          const b = bridges.has(sessionId) ? bridgeFor(sessionId) : null;
+          if (b && b.isConnected) {
+            try { await b.call("debug.stop", { sessionId }); } catch (err) {
+              logger.warn(`debug.stop failed (continuing cleanup): ${err}`);
+            }
           }
-        }
-        sessions.terminate(sessionId);
+        } catch { /* no bridge to stop */ }
+        await sessions.terminate(sessionId);
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                { status: "terminated", sessionId, debuggerKept: true },
-                null,
-                2
-              ),
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(
+              { status: "terminated", sessionId, debuggerKept: false },
+              null, 2,
+            ),
+          }],
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -766,7 +800,17 @@ export function registerDebugTools(server: McpServer): void {
             isError: true,
           };
         }
-        if (!bridge.isConnected) {
+        let b: BridgeClient;
+        try { b = bridgeFor(sessionId); } catch {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "Error: No bridge for session — cannot detach.",
+            }],
+            isError: true,
+          };
+        }
+        if (!b.isConnected) {
           return {
             content: [{
               type: "text" as const,
@@ -776,20 +820,17 @@ export function registerDebugTools(server: McpServer): void {
           };
         }
 
-        await bridge.call("debug.detach", { sessionId });
-        sessions.terminate(sessionId);
+        await b.call("debug.detach", { sessionId });
+        await sessions.terminate(sessionId);
 
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                { status: "detached", sessionId, processKept: true, debuggerKept: true },
-                null,
-                2
-              ),
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(
+              { status: "detached", sessionId, processKept: true, debuggerKept: false },
+              null, 2,
+            ),
+          }],
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -816,8 +857,8 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId }) => {
       const status: Record<string, unknown> = {
-        bridgeConnected: bridge.isConnected,
         activeSessions: sessions.list().length,
+        maxSessions: config.maxSessions,
       };
 
       if (sessionId) {
@@ -825,26 +866,31 @@ export function registerDebugTools(server: McpServer): void {
         if (!s) {
           status.session = { error: `Session not found: ${sessionId}` };
         } else {
+          let bridgeConnected = false;
+          let b: BridgeClient | null = null;
+          try { b = bridgeFor(sessionId); bridgeConnected = b.isConnected; } catch { /* mid-teardown */ }
+
           status.session = {
             id: s.id,
             state: s.state,
             executable: s.executable,
             architecture: s.architecture,
             pid: s.pid,
+            bridgePort: s.bridgePort,
+            bridgeConnected,
             breakpointCount: s.breakpoints.size,
           };
 
-          // When paused, fetch live register/location data from the bridge
-          if (bridge.isConnected && (s.state === "paused" || s.state === "idle")) {
+          if (b && b.isConnected && (s.state === "paused" || s.state === "idle")) {
             try {
-              const regs = await bridge.call<{ general: Record<string, string> }>(
+              const regs = await b.call<{ general: Record<string, string> }>(
                 "registers.get",
                 { sessionId, includeSegment: false, includeDebug: false, includeFpu: false }
               );
               const cip = regs.general["rip"] ?? regs.general["eip"] ?? "unknown";
               status.currentIP = cip;
             } catch {
-              // Non-fatal — just omit the IP
+              // Non-fatal
             }
           }
 
@@ -866,8 +912,7 @@ export function registerDebugTools(server: McpServer): void {
           status.sessions = all;
           status.hint = "Pass a sessionId to get detailed status for a specific session.";
         } else {
-          status.hint =
-            "No active sessions. Call load_executable with an absolute path to a PE (.exe/.dll) to start debugging.";
+          status.hint = "No active sessions. Call load_executable with an absolute path to a PE (.exe/.dll) to start debugging.";
         }
       }
 
@@ -911,19 +956,17 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ force }) => {
       const lines: string[] = [];
-
-      // Terminate all tracked sessions so their state stays consistent
-      for (const s of sessions.list()) {
-        sessions.terminate(s.id);
+      const ids = sessions.list().map((s) => s.id);
+      for (const id of ids) {
+        try { await sessions.terminate(id); } catch (err) {
+          lines.push(`terminate(${id}) failed: ${err}`);
+        }
       }
-      bridge.disconnect();
-      lines.push("Terminated active sessions and disconnected bridge.");
+      lines.push(`Terminated ${ids.length} session(s) and disconnected each bridge.`);
 
-      // Try graceful kill of process we launched
-      killDebugger();
-      lines.push("Sent kill signal to tracked debugger process.");
+      killAllDebuggers();
+      lines.push("Killed all tracked debugger processes.");
 
-      // Force-kill by name if requested or if bridge is still reachable
       if (force) {
         try {
           execSync("taskkill /IM x64dbg.exe /F", { stdio: "pipe" });
@@ -961,7 +1004,7 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId, expr, maxHits, timeoutSec }) => {
       try {
-        const result = await bridge.call<{ totalHits: number; args: string[]; errors: string[] }>(
+        const result = await bridgeFor(sessionId).call<{ totalHits: number; args: string[]; errors: string[] }>(
           "debug.collectBreakpointArgs",
           { sessionId, expr, maxHits, timeoutSec },
           (maxHits ?? 200) * ((timeoutSec ?? 10) + 2) * 1000
@@ -989,7 +1032,7 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ sessionId, command }) => {
       try {
-        const result = await bridge.call<{ output: string }>(
+        const result = await bridgeFor(sessionId).call<{ output: string }>(
           "debug.executeCommand",
           { sessionId, command }
         );
