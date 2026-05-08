@@ -13,6 +13,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-08
+
 ### Added
 - New `x64dbg-mcp service` subcommand tree to install/uninstall/start/stop/restart/status the MCP as a Windows service.
   - Service registers as `LocalSystem` and serves Streamable HTTP at `http://<host>:<port>/mcp` (default 127.0.0.1:3602).
