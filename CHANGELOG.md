@@ -13,6 +13,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-05-08
+
+### Changed
+- Default HTTP port unified to `3602` across standalone and service modes (was `3000` for standalone).
+  Updated `config.ts`, `cli.ts`, `.env.example`, and all documentation.
+
 ## [1.1.1] - 2026-05-08
 
 ### Added

@@ -96,7 +96,7 @@ export function renderCliUsage(): string {
     "",
     "Examples:",
     "  x64dbg-mcp",
-    "  x64dbg-mcp --transport streamable-http --host localhost --port 3000",
+    "  x64dbg-mcp --transport streamable-http --host localhost --port 3602",
     "",
     "Notes:",
     "  - The Streamable HTTP endpoint path is fixed at /mcp.",
