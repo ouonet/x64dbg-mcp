@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (Node.js), `net.Server` for port probing, child_process `spawn` with per-launch env, MCP SDK, plain Win32 C for fixtures (CMake build).
 
-**Spec:** See `docs/specs/2026-05-08-multi-session-design.md`.
+**Spec:** See `docs/superpowers/specs/2026-05-08-multi-session-design.md`.
 
 ---
 
