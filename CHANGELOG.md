@@ -13,6 +13,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-05-09
+
 ### Added
 - Multi-session support: a single MCP server instance can now spawn and manage multiple independent
   x64dbg processes simultaneously, each debugging a different target program.
@@ -49,6 +51,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   any remaining x64dbg processes.
 - Port allocation range moved from the Windows ephemeral pool (49152–65535) to 30000–44999 to
   prevent transient OS port reuse from causing false-positive `waitForBridge` probes.
+- `load_executable` tool description updated to reflect multi-session support; removed stale
+  "only one session at a time" wording.
+- README updated: feature list, architecture diagram, config defaults, project structure, and
+  testing commands now reflect multi-session architecture.
 
 ## [1.1.2] - 2026-05-08
 

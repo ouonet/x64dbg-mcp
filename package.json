@@ -1,6 +1,6 @@
 {
   "name": "x64dbg-mcp",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Production-level Model Context Protocol server for x64dbg reverse engineering and debugging",
   "type": "module",
   "main": "dist/server.js",
