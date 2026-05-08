@@ -354,9 +354,4 @@ export class BridgeClient extends EventEmitter {
   }
 }
 
-/**
- * Singleton bridge instance — DEPRECATED. Kept for transitional compatibility
- * until tools migrate to per-session BridgeClients via BridgeRegistry.
- * Will be removed in a later task once all callers are migrated.
- */
-export const bridge = new BridgeClient();
+// Singleton removed — every BridgeClient is owned by a session via bridgeRegistry.
