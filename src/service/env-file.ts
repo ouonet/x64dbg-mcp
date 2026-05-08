@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import { serviceEnvFile, serviceRootDir } from "./paths.js";
 
 const MANAGED_KEYS = ["MCP_TRANSPORT", "MCP_HTTP_HOST", "MCP_HTTP_PORT"] as const;
