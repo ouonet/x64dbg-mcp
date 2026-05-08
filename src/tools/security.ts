@@ -5,7 +5,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { bridge } from "../bridge.js";
+import { bridgeFor } from "../bridgeRegistry.js";
 import { sessions } from "../session.js";
 
 /** Windows APIs commonly associated with malicious behaviour, grouped by category. */
@@ -116,7 +116,7 @@ export function registerSecurityTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           isPacked: boolean;
           confidence: number;
@@ -162,7 +162,7 @@ export function registerSecurityTools(server: McpServer): void {
         sessions.get(sessionId);
 
         // Fetch the import table from the bridge
-        const imports = await bridge.call<{
+        const imports = await bridgeFor(sessionId).call<{
           imports: { function: string; module: string; address: string }[];
         }>("analysis.getImports", { sessionId, module });
 
@@ -247,7 +247,7 @@ export function registerSecurityTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           techniques: {
             name: string;
@@ -289,7 +289,7 @@ export function registerSecurityTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           sections: {
             name: string;
@@ -335,10 +335,10 @@ export function registerSecurityTools(server: McpServer): void {
 
         type ImportsResult = { imports: { function: string; module: string; address: string }[] };
         const [packing, antiDebug, sectionAnomalies, importsResult] = await Promise.all([
-          bridge.call("security.detectPacking", { sessionId, module }),
-          bridge.call("security.detectAntiDebug", { sessionId, module }),
-          bridge.call("security.checkSectionAnomalies", { sessionId, module }),
-          bridge.call<ImportsResult>("analysis.getImports", { sessionId, module }),
+          bridgeFor(sessionId).call("security.detectPacking", { sessionId, module }),
+          bridgeFor(sessionId).call("security.detectAntiDebug", { sessionId, module }),
+          bridgeFor(sessionId).call("security.checkSectionAnomalies", { sessionId, module }),
+          bridgeFor(sessionId).call<ImportsResult>("analysis.getImports", { sessionId, module }),
         ]);
 
         // Build suspicious API summary inline

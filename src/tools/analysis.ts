@@ -4,7 +4,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { bridge } from "../bridge.js";
+import { bridgeFor } from "../bridgeRegistry.js";
 import { sessions } from "../session.js";
 import { config } from "../config.js";
 import type {
@@ -47,7 +47,7 @@ export function registerAnalysisTools(server: McpServer): void {
         sessions.get(sessionId);
         const cappedCount = Math.min(count, config.maxDisasmInstructions);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           startAddress: string;
           functionName?: string;
           instructions: Instruction[];
@@ -90,7 +90,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<FunctionInfo>(
+        const result = await bridgeFor(sessionId).call<FunctionInfo>(
           "analysis.analyzeFunction",
           { sessionId, address }
         );
@@ -123,7 +123,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           xrefsTo: CrossReference[];
           xrefsFrom: CrossReference[];
@@ -162,7 +162,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           total: number;
           functions: { address: string; name: string; size: number; module: string }[];
         }>("analysis.listFunctions", { sessionId, module, nameFilter, offset, limit });
@@ -190,7 +190,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{ modules: ModuleInfo[] }>(
+        const result = await bridgeFor(sessionId).call<{ modules: ModuleInfo[] }>(
           "analysis.getModules",
           { sessionId }
         );
@@ -232,7 +232,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           totalImports: number;
           imports: ImportEntry[];
@@ -265,7 +265,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           totalExports: number;
           exports: ExportEntry[];
@@ -316,7 +316,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           totalFound: number;
           strings: StringReference[];
           truncated: boolean;
@@ -356,7 +356,7 @@ export function registerAnalysisTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           module: string;
           machine: string;
           timestamp: string;
@@ -423,7 +423,7 @@ export function registerAnalysisTools(server: McpServer): void {
 
         const capped = Math.min(maxInstructions, config.maxTraceInstructions);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           instructionsTraced: number;
           stopReason: string;
           trace: {

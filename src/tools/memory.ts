@@ -4,7 +4,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { bridge } from "../bridge.js";
+import { bridgeFor } from "../bridgeRegistry.js";
 import { sessions } from "../session.js";
 import { config } from "../config.js";
 import type { StackFrame, ThreadInfo, MemoryRegion } from "../types.js";
@@ -33,7 +33,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId); // validate session
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           size: number;
           hex: string;
@@ -68,7 +68,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           address: string;
           bytesWritten: number;
         }>("memory.write", { sessionId, address, hexBytes });
@@ -127,7 +127,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           matches: { address: string; context: string }[];
           totalFound: number;
           truncated: boolean;
@@ -185,7 +185,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           regions: MemoryRegion[];
           totalRegions: number;
         }>("memory.map", { sessionId, filterModule, filterProtection });
@@ -229,7 +229,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           general: Record<string, string>;
           flags: Record<string, boolean>;
           segment?: Record<string, string>;
@@ -265,7 +265,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        await bridge.call("registers.set", { sessionId, register, value });
+        await bridgeFor(sessionId).call("registers.set", { sessionId, register, value });
 
         return {
           content: [
@@ -306,7 +306,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           threadId: number;
           frames: StackFrame[];
         }>("stack.getCallStack", { sessionId, maxFrames });
@@ -333,7 +333,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           activeThreadId: number;
           threads: ThreadInfo[];
         }>("threads.list", { sessionId });
@@ -362,7 +362,7 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         sessions.get(sessionId);
 
-        const result = await bridge.call<{
+        const result = await bridgeFor(sessionId).call<{
           previousThread: number;
           currentThread: number;
           address: string;
