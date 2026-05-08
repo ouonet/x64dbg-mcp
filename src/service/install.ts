@@ -92,6 +92,7 @@ export async function runInstall(options: ServiceCliOptions): Promise<number> {
       const exePath = process.execPath; // node.exe
       const cliEntry = process.argv[1] ?? require.resolve("x64dbg-mcp/dist/server.js");
       const transcript = newTranscriptPath();
+      // buildElevatedArgs strips --elevate and replaces it with --transcript <path>.
       const args = buildElevatedArgs(
         ["service", "install", "--port", String(options.port), "--host", options.host, "--display-name", options.displayName, "--start", options.startType, "--elevate"],
         transcript
@@ -102,7 +103,7 @@ export async function runInstall(options: ServiceCliOptions): Promise<number> {
         write: (chunk) => process.stdout.write(chunk),
         spawn: () => spawnElevatedPowerShell({ exePath, args: [cliEntry, ...args] }),
       });
-      return exitCode === 0 ? 0 : exitCode;
+      return exitCode;
     }
     process.stderr.write(renderPrivilegeError(`service install --port ${options.port}`));
     return 2;
@@ -166,7 +167,7 @@ export async function runInstall(options: ServiceCliOptions): Promise<number> {
     name: SERVICE_NAME,
     description: options.displayName,
     script: serviceShimPath(),
-    scriptOptions: `--transport streamable-http --host ${options.host} --port ${options.port}`,
+    scriptOptions: `--transport streamable-http --host "${options.host}" --port ${options.port}`,
     workingDirectory: serviceWrapperDir(),
     env: [{ name: "X64DBG_MCP_CONFIG", value: serviceEnvFile() }],
     startType: nodeWindowsStartType(options.startType),
