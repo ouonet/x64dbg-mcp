@@ -29,6 +29,8 @@ export const ErrorCode = {
   E_NOT_PAUSED: "E_NOT_PAUSED",
   /** The supplied module name was not found in the debuggee. */
   E_MODULE_NOT_FOUND: "E_MODULE_NOT_FOUND",
+  /** No free TCP port could be allocated for a new bridge. */
+  E_PORT_EXHAUSTED: "E_PORT_EXHAUSTED",
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

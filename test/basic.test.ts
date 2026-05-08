@@ -595,6 +595,10 @@ describe("ErrorCode and McpError", async () => {
     const unique = new Set(vals);
     assert.equal(unique.size, vals.length, "duplicate error code detected");
   });
+
+  test("E_PORT_EXHAUSTED is registered", () => {
+    assert.equal(ErrorCode.E_PORT_EXHAUSTED, "E_PORT_EXHAUSTED");
+  });
 });
 
 // ─── logToolCall helper ────────────────────────────────────────────────────────
