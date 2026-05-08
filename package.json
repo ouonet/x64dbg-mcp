@@ -22,7 +22,8 @@
     "predev": "node scripts/sync-plugin.mjs",
     "dev": "tsx src/server.ts",
     "inspector": "npx @modelcontextprotocol/inspector node dist/server.js",
-    "test": "npx tsx --test test/basic.test.ts",
+    "test": "npx tsx --test test/basic.test.ts test/service/paths.test.ts test/service/installed-json.test.ts test/service/env-snapshot.test.ts test/service/privilege.test.ts test/service/health-check.test.ts test/service/elevate-runner.test.ts test/service/status-formatter.test.ts test/service/cli-parsing.test.ts test/service/error-codes.test.ts",
+    "test:service:integration": "npx tsx --test test/service/integration/lifecycle.integration.test.ts test/service/integration/reinstall.integration.test.ts test/service/integration/port-conflict.integration.test.ts test/service/integration/env-edit.integration.test.ts",
     "test:e2e": "node test/e2e/test_mcp_client.mjs",
     "test:http-smoke": "npm run build && node scripts/manual/test_http_transport.mjs",
     "test:http-smoke:attach:process-name": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual/run_http_attach_process_name_smoke.ps1",
@@ -67,11 +68,13 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "dotenv": "^16.5.0",
+    "node-windows": "^1.0.0-beta.8",
     "winston": "^3.17.0",
     "zod": "^3.25.36"
   },
   "devDependencies": {
     "@types/node": "^22.19.15",
+    "@types/node-windows": "^0.1.6",
     "@typescript-eslint/eslint-plugin": "^8.59.0",
     "@typescript-eslint/parser": "^8.59.0",
     "eslint": "^9.0.0",
