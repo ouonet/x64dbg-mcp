@@ -320,12 +320,12 @@ describe("BridgeClient (offline)", async () => {
   >("src/bridge.ts");
 
   test("isConnected is false before connect()", () => {
-    const b = new BridgeClient();
+    const b = new BridgeClient("127.0.0.1", 19999);
     assert.equal(b.isConnected, false);
   });
 
   test("request() throws when not connected", async () => {
-    const b = new BridgeClient();
+    const b = new BridgeClient("127.0.0.1", 19999);
     await assert.rejects(
       () => b.request("test.method", {}),
       /Bridge is not connected/
@@ -333,7 +333,7 @@ describe("BridgeClient (offline)", async () => {
   });
 
   test("call() throws when not connected", async () => {
-    const b = new BridgeClient();
+    const b = new BridgeClient("127.0.0.1", 19999);
     await assert.rejects(
       () => b.call("test.method", {}),
       /Bridge is not connected/

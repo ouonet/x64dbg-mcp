@@ -39,8 +39,19 @@ export class BridgeClient extends EventEmitter {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  constructor(
+    private readonly host: string = config.bridgeHost,
+    private readonly port: number = config.bridgePort,
+  ) {
+    super();
+  }
+
   get isConnected(): boolean {
     return this.connected;
+  }
+
+  get bridgePort(): number {
+    return this.port;
   }
 
   // ── Connection management ───────────────────────────────────────────────
@@ -74,9 +85,7 @@ export class BridgeClient extends EventEmitter {
         this.connecting = false;
         this.reconnectAttempts = 0;
         this.buffer = "";
-        logger.info(
-          `Bridge connected to ${config.bridgeHost}:${config.bridgePort}`
-        );
+        logger.info(`Bridge connected to ${this.host}:${this.port}`);
         this.emit("connected-result");
         resolve();
       });
@@ -103,7 +112,7 @@ export class BridgeClient extends EventEmitter {
         }
       });
 
-      this.socket.connect(config.bridgePort, config.bridgeHost);
+      this.socket.connect(this.port, this.host);
     });
   }
 
@@ -345,5 +354,9 @@ export class BridgeClient extends EventEmitter {
   }
 }
 
-/** Singleton bridge instance */
+/**
+ * Singleton bridge instance — DEPRECATED. Kept for transitional compatibility
+ * until tools migrate to per-session BridgeClients via BridgeRegistry.
+ * Will be removed in a later task once all callers are migrated.
+ */
 export const bridge = new BridgeClient();
