@@ -1,11 +1,14 @@
 /**
  * Session manager — tracks active x64dbg debugging sessions.
+ *
+ * Each session owns its own x64dbg process and bridge connection. terminate()
+ * is the canonical full-cleanup path: disconnect bridge → kill x64dbg → drop
+ * session entry. GC reuses the same path when an idle session expires.
  */
 
 import crypto from "crypto";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { bridge } from "./bridge.js";
 import { ErrorCode, McpError } from "./errors.js";
 import type { Session, DebugState, Breakpoint, ModuleInfo } from "./types.js";
 
@@ -25,19 +28,29 @@ export class SessionManager {
       clearInterval(this.gcTimer);
       this.gcTimer = null;
     }
-    for (const id of this.sessions.keys()) {
-      this.terminate(id);
+    const ids = Array.from(this.sessions.keys());
+    for (const id of ids) {
+      void this.terminate(id);
     }
     this.sessions.clear();
   }
 
   // ── CRUD ────────────────────────────────────────────────────────────────
 
-  create(executable: string, architecture: "x86" | "x64", pid: number, bridgePort = 0): Session {
-    if (this.sessions.size >= 1) {
+  create(
+    executable: string,
+    architecture: "x86" | "x64",
+    pid: number,
+    bridgePort: number,
+  ): Session {
+    if (this.sessions.size >= config.maxSessions) {
+      const active = this.list().map((s) =>
+        `${s.id} (${s.executable}, ${s.state})`,
+      ).join(", ");
       throw new McpError(
         ErrorCode.E_SESSION_LIMIT,
-        "Only one active debugging session is supported. Terminate the current session before loading a new executable."
+        `Reached MAX_SESSIONS=${config.maxSessions}. Active sessions: ${active}. ` +
+        `Terminate one before loading another executable.`,
       );
     }
 
@@ -57,16 +70,12 @@ export class SessionManager {
     };
 
     this.sessions.set(id, session);
-    logger.info(`Session created: ${id} → ${executable} (${architecture})`);
+    logger.info(
+      `Session created: ${id} → ${executable} (${architecture}, port ${bridgePort})`,
+    );
     return session;
   }
 
-  /**
-   * Look up a session by ID.
-   * NOTE: intentionally updates lastActivity so that sessions actively in use
-   * are not reaped by the GC. If you need a read-only lookup without touching
-   * the timer, use peek().
-   */
   get(id: string): Session {
     const s = this.sessions.get(id);
     if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);
@@ -74,11 +83,6 @@ export class SessionManager {
     return s;
   }
 
-  /**
-   * Look up a session by ID without updating lastActivity.
-   * Use this for read-only operations (e.g. get_status) where touching the
-   * idle timer is undesirable.
-   */
   peek(id: string): Session {
     const s = this.sessions.get(id);
     if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);
@@ -115,11 +119,38 @@ export class SessionManager {
     s.breakpoints.delete(address);
   }
 
-  terminate(id: string): void {
+  /**
+   * Full cleanup: disconnect bridge, kill the owning x64dbg, drop the session.
+   * Safe to call repeatedly; missing pieces are tolerated.
+   */
+  async terminate(id: string): Promise<void> {
     const s = this.sessions.get(id);
     if (!s) return;
 
     s.state = "terminated";
+
+    // Lazy imports to avoid circular dependencies with bridgeRegistry / launcher.
+    try {
+      const { bridges } = await import("./bridgeRegistry.js");
+      try { await bridges.delete(id); } catch (err) {
+        logger.warn(`terminate(${id}): bridge cleanup failed: ${err}`);
+      }
+    } catch (err) {
+      logger.warn(`terminate(${id}): bridgeRegistry import failed: ${err}`);
+    }
+
+    try {
+      const launcherModule = await import("./launcher.js") as Record<string, unknown>;
+      const killFn = launcherModule.killDebuggerForSession as ((sid: string) => void) | undefined;
+      if (typeof killFn === "function") {
+        try { killFn(id); } catch (err) {
+          logger.warn(`terminate(${id}): debugger kill failed: ${err}`);
+        }
+      }
+    } catch (err) {
+      logger.warn(`terminate(${id}): launcher import failed: ${err}`);
+    }
+
     this.sessions.delete(id);
     logger.info(`Session terminated: ${id}`);
   }
@@ -131,13 +162,7 @@ export class SessionManager {
     for (const [id, s] of this.sessions) {
       if (now - s.lastActivity > config.sessionTimeoutMs) {
         logger.warn(`Session ${id} expired (idle > ${config.sessionTimeoutMs}ms)`);
-        // Notify the bridge to stop the debuggee before dropping the session
-        if (bridge.isConnected) {
-          bridge.call("debug.stop", { sessionId: id }).catch((err) => {
-            logger.warn(`GC: debug.stop failed for session ${id}: ${err}`);
-          });
-        }
-        this.terminate(id);
+        void this.terminate(id);
       }
     }
   }
@@ -149,6 +174,7 @@ export class SessionManager {
       executable: s.executable,
       architecture: s.architecture,
       state: s.state,
+      bridgePort: s.bridgePort,
       createdAt: new Date(s.createdAt).toISOString(),
       lastActivity: new Date(s.lastActivity).toISOString(),
       breakpoints: Array.from(s.breakpoints.values()),

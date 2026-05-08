@@ -115,7 +115,7 @@ export function registerDebugTools(server: McpServer): void {
         });
 
         const arch = result.architecture || detectedArch || "x64";
-        const session = sessions.create(executablePath, arch, result.pid);
+        const session = sessions.create(executablePath, arch, result.pid, 0);
         sessions.updateState(session.id, breakOnEntry ? "paused" : "running");
 
         return {
@@ -208,7 +208,7 @@ export function registerDebugTools(server: McpServer): void {
         }
 
         // Create session before calling bridge
-        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid);
+        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid, 0);
         const sessionId = session.id;
         sessions.updateState(sessionId, "paused");
 

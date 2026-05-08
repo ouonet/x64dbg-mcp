@@ -235,19 +235,19 @@ describe("SessionManager", async () => {
 
   test("creates a session with correct fields", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("test.exe", "x64", 1234);
+    const s = mgr.create("test.exe", "x64", 1234, 50000);
     assert.equal(s.executable, "test.exe");
     assert.equal(s.architecture, "x64");
     assert.equal(s.pid, 1234);
+    assert.equal(s.bridgePort, 50000);
     assert.equal(s.state, "idle");
     assert.ok(typeof s.id === "string" && s.id.length > 0);
   });
 
   test("get() returns the session by id", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("a.exe", "x86", 1);
-    const got = mgr.get(s.id);
-    assert.equal(got.id, s.id);
+    const s = mgr.create("a.exe", "x86", 1, 50001);
+    assert.equal(mgr.get(s.id).id, s.id);
   });
 
   test("get() throws for unknown id", () => {
@@ -257,14 +257,14 @@ describe("SessionManager", async () => {
 
   test("has() returns correct boolean", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("b.exe", "x64", 2);
+    const s = mgr.create("b.exe", "x64", 2, 50002);
     assert.equal(mgr.has(s.id), true);
     assert.equal(mgr.has("ghost"), false);
   });
 
   test("updateState() changes state", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("c.exe", "x64", 3);
+    const s = mgr.create("c.exe", "x64", 3, 50003);
     mgr.updateState(s.id, "running");
     assert.equal(mgr.get(s.id).state, "running");
     mgr.updateState(s.id, "paused");
@@ -273,14 +273,14 @@ describe("SessionManager", async () => {
 
   test("list() returns all sessions", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("d.exe", "x64", 4);
+    const s = mgr.create("d.exe", "x64", 4, 50004);
     assert.equal(mgr.list().length, 1);
     assert.equal(mgr.list()[0]?.id, s.id);
   });
 
   test("addBreakpoint() and removeBreakpoint()", () => {
     const mgr = new SessionManager();
-    const s = mgr.create("f.exe", "x64", 6);
+    const s = mgr.create("f.exe", "x64", 6, 50005);
     mgr.addBreakpoint(s.id, {
       address: "0x401000",
       type: "software",
@@ -292,21 +292,36 @@ describe("SessionManager", async () => {
     assert.equal(mgr.get(s.id).breakpoints.size, 0);
   });
 
-  test("toJSON() serialises sessions", () => {
+  test("toJSON() serialises sessions including bridgePort", () => {
     const mgr = new SessionManager();
-    mgr.create("g.exe", "x64", 7);
-    const arr = mgr.toJSON() as { executable: string }[];
+    mgr.create("g.exe", "x64", 7, 50006);
+    const arr = mgr.toJSON() as { executable: string; bridgePort: number }[];
     assert.equal(arr.length, 1);
     assert.equal(arr[0].executable, "g.exe");
+    assert.equal(arr[0].bridgePort, 50006);
   });
 
-  test("throws when max sessions reached", () => {
-    const mgr = new SessionManager();
-    mgr.create("exe0.exe", "x64", 100);
-    assert.throws(
-      () => mgr.create("overflow.exe", "x64", 999),
-      /Only one active debugging session is supported/
-    );
+  test("supports multiple concurrent sessions up to MAX_SESSIONS", async () => {
+    // Temporarily patch the shared config singleton to maxSessions=5 so this
+    // test is independent of the local .env value (which may be 1 in dev).
+    const cfgMod = await importFresh<typeof import("../src/config.js")>("src/config.ts");
+    const origMax = cfgMod.config.maxSessions;
+    (cfgMod.config as Record<string, unknown>).maxSessions = 5;
+    try {
+      const mgr = new SessionManager();
+      const created = [];
+      for (let i = 0; i < 5; i++) {
+        created.push(mgr.create(`exe${i}.exe`, "x64", 100 + i, 51000 + i));
+      }
+      assert.equal(mgr.list().length, 5);
+      // 6th must fail
+      assert.throws(
+        () => mgr.create("overflow.exe", "x64", 999, 51999),
+        /Reached MAX_SESSIONS=5/,
+      );
+    } finally {
+      (cfgMod.config as Record<string, unknown>).maxSessions = origMax;
+    }
   });
 });
 
