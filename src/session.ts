@@ -33,7 +33,7 @@ export class SessionManager {
 
   // ── CRUD ────────────────────────────────────────────────────────────────
 
-  create(executable: string, architecture: "x86" | "x64", pid: number): Session {
+  create(executable: string, architecture: "x86" | "x64", pid: number, bridgePort = 0): Session {
     if (this.sessions.size >= 1) {
       throw new McpError(
         ErrorCode.E_SESSION_LIMIT,
@@ -49,6 +49,7 @@ export class SessionManager {
       executable,
       architecture,
       state: "idle",
+      bridgePort,
       createdAt: now,
       lastActivity: now,
       breakpoints: new Map(),

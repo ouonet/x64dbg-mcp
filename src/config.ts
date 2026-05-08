@@ -126,6 +126,7 @@ export function loadConfig(): ServerConfig {
     mcpHttpPort: parseEnvInt(process.env.MCP_HTTP_PORT, 3602),
     logLevel: (process.env.LOG_LEVEL as ServerConfig["logLevel"]) || "info",
     sessionTimeoutMs: parseEnvInt(process.env.SESSION_TIMEOUT_MS, 3_600_000),
+    maxSessions: parseEnvInt(process.env.MAX_SESSIONS, 5),
     maxDisasmInstructions: parseEnvInt(process.env.MAX_DISASM_INSTRUCTIONS, 500),
     maxTraceInstructions: parseEnvInt(process.env.MAX_TRACE_INSTRUCTIONS, 10_000),
     maxSearchResults: parseEnvInt(process.env.MAX_SEARCH_RESULTS, 1000),

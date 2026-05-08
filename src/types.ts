@@ -10,6 +10,7 @@ export interface Session {
   executable: string;
   architecture: "x86" | "x64";
   state: DebugState;
+  bridgePort: number;
   createdAt: number;
   lastActivity: number;
   breakpoints: Map<string, Breakpoint>;
@@ -318,6 +319,7 @@ export interface ServerConfig {
   mcpHttpPort: number;
   logLevel: "error" | "warn" | "info" | "debug";
   sessionTimeoutMs: number;
+  maxSessions: number;
   maxDisasmInstructions: number;
   maxTraceInstructions: number;
   maxSearchResults: number;
