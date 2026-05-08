@@ -154,13 +154,13 @@ describe("parseCliRuntimeOverrides", async () => {
       "--host",
       "localhost",
       "--port",
-      "3000",
+      "3602",
     ]);
 
     assert.deepEqual(options, {
       transport: "streamable-http",
       host: "localhost",
-      port: 3000,
+      port: 3602,
       showHelp: false,
     });
   });
@@ -348,7 +348,7 @@ describe("loadConfig", async () => {
     const cfg = loadConfig();
     assert.equal(cfg.mcpTransport, "stdio");
     assert.equal(cfg.mcpHttpHost, "127.0.0.1");
-    assert.equal(cfg.mcpHttpPort, 3000);
+    assert.equal(cfg.mcpHttpPort, 3602);
   });
 
   test("reads HTTP MCP transport env overrides", () => {
