@@ -13,6 +13,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- New `x64dbg-mcp service` subcommand tree to install/uninstall/start/stop/restart/status the MCP as a Windows service.
+  - Service registers as `LocalSystem` and serves Streamable HTTP at `http://<host>:<port>/mcp` (default 127.0.0.1:3602).
+  - Configuration is seeded into `%ProgramData%\x64dbg-mcp\.env`; the service reads it via `X64DBG_MCP_CONFIG`.
+  - Optional `--elevate` flag spawns an elevated child via PowerShell `Start-Process -Verb RunAs` and streams its output back to the original terminal via a transcript file.
+  - `status` includes a live MCP `initialize` health probe when the service is running.
+- New manual smoke helper `scripts/manual/run_service_smoke.ps1` and npm script `test:service:smoke`.
+
 ## [1.1.0] - 2026-05-07
 
 ### Added

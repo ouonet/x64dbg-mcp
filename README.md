@@ -294,6 +294,40 @@ If your AI tool does **not** support remote HTTP MCP servers and only knows how 
 
 CLI flags override `MCP_TRANSPORT`, `MCP_HTTP_HOST`, and `MCP_HTTP_PORT` from the environment. The legacy `MCP_TRANSPORT=http` alias is still accepted for compatibility.
 
+## Run as a Windows service
+
+Register `x64dbg-mcp` as a Windows service that serves Streamable HTTP at a fixed endpoint, surviving reboots.
+
+> Service registration requires administrator privileges. Open PowerShell as Administrator before running these commands, or pass `--elevate` to trigger UAC.
+
+```powershell
+# Install (default: 127.0.0.1:3602)
+x64dbg-mcp service install
+
+# Or with explicit values:
+x64dbg-mcp service install --port 3602 --host 127.0.0.1
+
+# Lifecycle
+x64dbg-mcp service start
+x64dbg-mcp service status
+x64dbg-mcp service stop
+x64dbg-mcp service restart
+x64dbg-mcp service uninstall
+
+# Run from a non-admin shell (UAC prompt will appear)
+x64dbg-mcp service install --elevate
+```
+
+The service runs as `LocalSystem` and listens on `http://<host>:<port>/mcp`. Configuration lives at `%ProgramData%\x64dbg-mcp\.env`; edit it and run `service restart` to apply changes (e.g., `X64DBG_PATH`, `MAX_SESSIONS`).
+
+Logs are at `%ProgramData%\x64dbg-mcp\logs\`:
+
+- `x64dbg-mcp.out.log` — stdout
+- `x64dbg-mcp.err.log` — stderr
+- `x64dbg-mcp.wrapper.log` — daemon wrapper diagnostics
+
+Note: under `LocalSystem`, x64dbg's GUI launches in Session 0 and is not visible on the user desktop. AI tool calls through the MCP work normally. If you need a visible x64dbg UI, run `x64dbg-mcp` in foreground HTTP mode instead of as a service.
+
 ## Typical Prompts
 
 These are good examples of the kinds of requests the MCP server is built to support:
