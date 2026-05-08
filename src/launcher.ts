@@ -12,6 +12,7 @@ import net from "net";
 import path from "path";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
+import { McpError, ErrorCode } from "./errors.js";
 
 const BRIDGE_POLL_INTERVAL_MS = 500;
 const BRIDGE_POLL_TIMEOUT_MS = 30_000;
@@ -72,6 +73,34 @@ export function detectPEArchitecture(
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/**
+ * Pick a free TCP port in the dynamic / private range (49152–65535).
+ * Probes by binding a throwaway server; the first successful bind wins.
+ *
+ * @throws McpError(E_PORT_EXHAUSTED) after `attempts` random failures.
+ */
+export async function pickFreePort(
+  min = 49152,
+  max = 65535,
+  attempts = 20,
+): Promise<number> {
+  for (let i = 0; i < attempts; i++) {
+    const candidate = Math.floor(min + Math.random() * (max - min + 1));
+    const ok = await new Promise<boolean>((resolve) => {
+      const srv = net.createServer();
+      srv.once("error", () => { srv.close(); resolve(false); });
+      srv.listen(candidate, "127.0.0.1", () => {
+        srv.close(() => resolve(true));
+      });
+    });
+    if (ok) return candidate;
+  }
+  throw new McpError(
+    ErrorCode.E_PORT_EXHAUSTED,
+    `Could not allocate a free TCP port in [${min}, ${max}] after ${attempts} attempts`,
+  );
 }
 
 /**

@@ -110,6 +110,37 @@ describe("resolveDebuggerExe", async () => {
   );
 });
 
+// ─── pickFreePort ─────────────────────────────────────────────────────────────
+
+describe("pickFreePort", async () => {
+  const { pickFreePort } = await importFresh<
+    typeof import("../src/launcher.js")
+  >("src/launcher.ts");
+
+  test("returns a port in the high range", async () => {
+    const p = await pickFreePort();
+    assert.ok(p >= 49152 && p <= 65535, `port out of range: ${p}`);
+  });
+
+  test("returned port is actually bindable", async () => {
+    const p = await pickFreePort();
+    await new Promise<void>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.once("error", reject);
+      srv.listen(p, "127.0.0.1", () => {
+        srv.close((err) => err ? reject(err) : resolve());
+      });
+    });
+  });
+
+  test("two consecutive calls return different ports (high probability)", async () => {
+    // Random allocation should rarely collide; this is a probabilistic check.
+    const ports = new Set<number>();
+    for (let i = 0; i < 5; i++) ports.add(await pickFreePort());
+    assert.ok(ports.size >= 4, `expected ≥4 distinct ports, got ${ports.size}`);
+  });
+});
+
 // ─── cmdLineArgs splitting ────────────────────────────────────────────────────
 
 describe("cmdLineArgs splitting (regression)", () => {
