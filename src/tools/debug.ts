@@ -63,7 +63,9 @@ export function registerDebugTools(server: McpServer): void {
       "get_registers, or disassemble. " +
       "With breakOnEntry=false: the debuggee starts running; use set_breakpoint then " +
       "continue_execution to pause it later. " +
-      "Only one session can be active at a time. Call terminate_session first if one exists.",
+      "Multiple concurrent sessions are supported (up to MAX_SESSIONS, default 5). " +
+      "Each call spawns a fresh x64dbg instance on its own bridge port. " +
+      "Call list_sessions to see active sessions, terminate_session to free one.",
     {
       executablePath: z
         .string()

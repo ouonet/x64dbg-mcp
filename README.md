@@ -5,6 +5,7 @@ A production-level [Model Context Protocol](https://modelcontextprotocol.io) ser
 It is designed for practical debugger automation, not just toy examples:
 
 - Auto-detects PE architecture and launches `x32dbg` or `x64dbg` as needed
+- Supports multiple concurrent sessions — one MCP server can debug several programs in parallel
 - Supports both `load_executable` and `attach_to_process`
 - Exposes debugging, memory, analysis, and security triage tools through MCP
 - Uses a lightweight bridge plugin and talks to `x64bridge.dll` directly via `ctypes`
@@ -157,7 +158,7 @@ MCP_HTTP_PORT=3602
 
 # Logging / limits
 LOG_LEVEL=info
-MAX_SESSIONS=1
+MAX_SESSIONS=5
 SESSION_TIMEOUT_MS=3600000
 ```
 
@@ -173,7 +174,7 @@ SESSION_TIMEOUT_MS=3600000
 | `MCP_HTTP_HOST` | `127.0.0.1` | Default HTTP bind host |
 | `MCP_HTTP_PORT` | `3602` | Default HTTP listen port |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
-| `MAX_SESSIONS` | `1` | Active session limit for the current bridge architecture |
+| `MAX_SESSIONS` | `5` | Maximum number of concurrent x64dbg sessions |
 | `SESSION_TIMEOUT_MS` | `3600000` | Idle session timeout in milliseconds |
 
 If you manually start x64dbg outside the MCP flow, keep the deployed `x64dbg_mcp_bridge.token` file in the plugins directory so the bridge enforces the same token as the MCP server.
@@ -362,14 +363,17 @@ Representative tools include `load_executable`, `attach_to_process`, `get_status
 ## Architecture
 
 ```text
-┌─────────────────┐  STDIO / HTTP     ┌──────────────────┐  TCP (JSON)  ┌──────────────┐
-│  AI Assistant   │ ◄───────────────► │  MCP Server      │ ◄──────────► │  x64dbg      │
-│  (Claude, etc.) │                   │  (Node.js / TS)  │  port 27042  │  + Bridge    │
-└─────────────────┘                   └──────────────────┘              │    Plugin    │
-                                                                        └──────────────┘
+┌─────────────────┐  STDIO / HTTP     ┌──────────────────┐     TCP (JSON)    ┌──────────────┐
+│  AI Assistant   │ ◄───────────────► │  MCP Server      │ ◄───────────────► │ x64dbg #A    │
+│  (Claude, etc.) │                   │  (Node.js / TS)  │  per-session port │  + Bridge    │
+└─────────────────┘                   │                  │ ◄───────────────► ├──────────────┤
+                                      │  BridgeRegistry  │                   │ x64dbg #B    │
+                                      │  (one client     │ ◄───────────────► ├──────────────┤
+                                      │   per session)   │                   │ x64dbg #C    │
+                                      └──────────────────┘                   └──────────────┘
 ```
 
-At a high level, the MCP server in `src/` speaks STDIO or Streamable HTTP to an AI client, then forwards requests over a local TCP bridge to the plugin running inside x64dbg. The plugin side is a lightweight C loader plus Python bridge that translates those requests into x64dbg Bridge SDK calls.
+At a high level, the MCP server speaks STDIO or Streamable HTTP to an AI client. Each `load_executable` or `attach_to_process` call spawns a fresh x64dbg instance on its own randomly allocated TCP port and creates an independent `BridgeClient`. The `BridgeRegistry` routes every tool call to the correct instance using the `sessionId` returned at load time. Multiple sessions can run in parallel up to `MAX_SESSIONS` (default 5). The plugin side is a lightweight C loader plus Python bridge that translates requests into x64dbg Bridge SDK calls.
 
 ## Development And Testing
 
@@ -395,6 +399,10 @@ python plugin/tests/test_bridge.py
 npm run test:e2e
 npm run test:http-smoke
 npm run doctor
+
+# Integration test (requires x64dbg + MSVC-built fixtures)
+npm run build:fixtures
+npm run test:integration
 ```
 
 `npm run dev` automatically syncs Python files into the bundled x64dbg checkout before starting the server.
@@ -427,8 +435,9 @@ x64dbg-mcp/
 │   ├── cli.ts                 # CLI parsing for transport/host/port
 │   ├── httpServer.ts          # Streamable HTTP server and MCP session handling
 │   ├── mcpServer.ts           # Shared MCP server factory and tool registration
-│   ├── bridge.ts              # TCP client for the x64dbg bridge
-│   ├── launcher.ts            # PE detection and debugger startup
+│   ├── bridge.ts              # Per-session TCP client for the x64dbg bridge
+│   ├── bridgeRegistry.ts      # Registry of active BridgeClient instances keyed by sessionId
+│   ├── launcher.ts            # PE detection, port allocation, and debugger startup
 │   ├── session.ts             # Session lifecycle and garbage collection
 │   ├── config.ts              # Env-backed configuration loading
 │   ├── errors.ts              # Shared error helpers
@@ -463,6 +472,9 @@ x64dbg-mcp/
 │   └── manual/
 ├── test/
 │   ├── basic.test.ts
+│   ├── integration/
+│   │   └── multi-session.test.ts  # Two-session Winsock integration test
+│   ├── fixtures/                  # Winsock HTTP server/client PEs (build with npm run build:fixtures)
 │   └── e2e/
 ├── x64dbg/                    # Bundled x64dbg snapshot used in development/tests
 ├── package.json
