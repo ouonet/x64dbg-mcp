@@ -13,6 +13,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Multi-session support: a single MCP server instance can now spawn and manage multiple independent
+  x64dbg processes simultaneously, each debugging a different target program.
+  - `src/bridgeRegistry.ts` — new `BridgeRegistry` singleton keyed by `sessionId`; replaces the
+    global `bridge` singleton. `bridgeFor(sessionId)` is the tool-layer accessor.
+  - `src/launcher.ts` — `pickFreePort(min=30000, max=44999)` probes random ports below the Windows
+    ephemeral range to avoid false-positive hits; `launchDebuggerOnPort(exe, port)` injects
+    `BRIDGE_PORT` into the child's environment; `killDebuggerForSession`/`killAllDebuggers` for
+    per-session and global teardown.
+  - `src/session.ts` — `SessionManager.terminate(id)` is now `async` and cascades:
+    `bridges.delete` → `killDebuggerForSession` → session entry removal.
+  - `src/tools/debug.ts` — `load_executable` and `attach_to_process` rewritten with 6-step
+    resource-ownership protocol and rollback on failure. All tools now call
+    `bridgeFor(sessionId).call(...)` instead of the former global singleton.
+  - `MAX_SESSIONS` env var (default `5`) enforced in `load_executable` and `attach_to_process`;
+    exceeding the cap returns `E_SESSION_LIMIT` with the active session list.
+  - `E_PORT_EXHAUSTED` error code added to `src/errors.ts`.
+  - `bridgePort` field added to the `Session` type and exposed in `list_sessions`/`get_status`
+    responses.
+- Integration test suite `test/integration/multi-session.test.ts`: drives two concurrent
+  x64dbg sessions (HTTP server + HTTP client Winsock PE fixtures) with `ws2_32.accept` and
+  `ws2_32.connect` breakpoints; verifies port isolation, BP isolation, parallel dispatch,
+  and clean per-session teardown.
+- Test fixtures `test/fixtures/http_server.c` and `http_client.c`: minimal Winsock PE programs
+  built with CMake + MSVC (`npm run build:fixtures`).
+- `npm run test:integration` script to run the integration test.
+
+### Changed
+- `BridgeClient` is no longer a module-level singleton; it is constructed per-session via
+  `new BridgeClient(host, port)`.
+- Server startup no longer connects a global bridge; the MCP server starts in a zero-session
+  state and connects only when `load_executable` or `attach_to_process` is called.
+- Graceful shutdown iterates all active sessions and terminates them in parallel before killing
+  any remaining x64dbg processes.
+- Port allocation range moved from the Windows ephemeral pool (49152–65535) to 30000–44999 to
+  prevent transient OS port reuse from causing false-positive `waitForBridge` probes.
+
 ## [1.1.2] - 2026-05-08
 
 ### Changed
