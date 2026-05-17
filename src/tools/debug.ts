@@ -442,7 +442,8 @@ export function registerDebugTools(server: McpServer): void {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        sessions.updateState(sessionId, "stepping");
+        // T1: state transitions are driven by bridge events in T8. The step
+        // operation will leave state as "paused" once the bridge reports it.
 
         const result = await bridgeFor(sessionId).call<{
           address: string;
@@ -493,7 +494,8 @@ export function registerDebugTools(server: McpServer): void {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        sessions.updateState(sessionId, "stepping");
+        // T1: state transitions are driven by bridge events in T8. The step
+        // operation will leave state as "paused" once the bridge reports it.
 
         const result = await bridgeFor(sessionId).call<{
           address: string;
@@ -531,7 +533,8 @@ export function registerDebugTools(server: McpServer): void {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        sessions.updateState(sessionId, "stepping");
+        // T1: state transitions are driven by bridge events in T8. The step
+        // operation will leave state as "paused" once the bridge reports it.
 
         const result = await bridgeFor(sessionId).call<{
           address: string;
@@ -883,7 +886,7 @@ export function registerDebugTools(server: McpServer): void {
             breakpointCount: s.breakpoints.size,
           };
 
-          if (b && b.isConnected && (s.state === "paused" || s.state === "idle")) {
+          if (b && b.isConnected && s.state === "paused") {
             try {
               const regs = await b.call<{ general: Record<string, string> }>(
                 "registers.get",
@@ -901,8 +904,8 @@ export function registerDebugTools(server: McpServer): void {
               ? "Debuggee is paused. You may call: step_into, step_over, step_out, continue_execution, get_registers, disassemble, read_memory."
               : s.state === "running"
               ? "Debuggee is running. Wait for it to pause at a breakpoint, or call terminate_session."
-              : s.state === "idle"
-              ? "Session created but no execution started yet. Call continue_execution to run."
+              : s.state === "loading"
+              ? "Session is initializing the debuggee. Call wait_for_state(expect=\"paused\") or get_status to track progress."
               : s.state === "terminated"
               ? "Session terminated. Call load_executable to start a new session."
               : `Session is in state '${s.state}'.`;

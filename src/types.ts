@@ -10,6 +10,16 @@ export interface Session {
   executable: string;
   architecture: "x86" | "x64";
   state: DebugState;
+  /** D2: non-null iff state === "paused" */
+  pauseReason: PauseReason | null;
+  /** D2: non-null iff state === "terminated" */
+  terminationReason: TerminationReason | null;
+  /** D2: timestamp of last state transition (epoch ms) */
+  terminatedAt?: number;
+  /** D2: most recent debug event of any kind */
+  lastEvent: DebugEvent | null;
+  /** D2/D4: per-session ring buffer (50 entries, chronological) */
+  recentEvents: DebugEvent[];
   bridgePort: number;
   createdAt: number;
   lastActivity: number;
@@ -17,14 +27,97 @@ export interface Session {
   modules: ModuleInfo[];
 }
 
-export type DebugState =
-  | "idle"
-  | "loading"
-  | "paused"
-  | "running"
-  | "stepping"
-  | "terminated"
-  | "error";
+/**
+ * D2 — coarse session phase.
+ * Narrowed from v1.1.x's 7-value enum to spec's 4 values.
+ */
+export const DEBUG_STATES = [
+  "loading",
+  "running",
+  "paused",
+  "terminated",
+] as const;
+export type DebugState = (typeof DEBUG_STATES)[number];
+
+// ─── v1.2.0 state model (D2 / D3) ───────────────────────────────────────────
+
+/**
+ * D3 — why execution is currently halted. Set when state === "paused".
+ */
+export const PAUSE_REASONS = [
+  "breakpoint",
+  "step",
+  "exception",
+  "tls_callback",
+  "system_breakpoint",
+  "manual_pause",
+  "trace_terminated",
+  "dll_load_break",
+  "dll_unload_break",
+  "thread_create_break",
+  "thread_exit_break",
+  "output_debug_break",
+  "unknown",
+] as const;
+export type PauseReason = (typeof PAUSE_REASONS)[number];
+
+/**
+ * D3 — why the session ended. Set when state === "terminated".
+ */
+export const TERMINATION_REASONS = [
+  "process_exit",
+  "detached",
+  "bridge_lost",
+  "unknown",
+] as const;
+export type TerminationReason = (typeof TERMINATION_REASONS)[number];
+
+/**
+ * D3 — kind of every observable x64dbg callback. Goes into the event log
+ * regardless of whether the callback caused a pause.
+ */
+export const DEBUG_EVENT_KINDS = [
+  "breakpoint",
+  "step",
+  "exception",
+  "tls_callback",
+  "dll_load",
+  "dll_unload",
+  "thread_create",
+  "thread_exit",
+  "process_create",
+  "process_exit",
+  "system_breakpoint",
+  "manual_pause",
+  "output_debug_string",
+  "trace_terminated",
+  "detached",
+] as const;
+export type DebugEventKind = (typeof DEBUG_EVENT_KINDS)[number];
+
+/**
+ * D3 — breakpoint event sub-discriminators.
+ */
+export const BP_TYPES = ["sw", "hw", "mem", "dll", "exception"] as const;
+export type BpType = (typeof BP_TYPES)[number];
+
+export const BP_KINDS = ["user", "temporary", "system"] as const;
+export type BpKind = (typeof BP_KINDS)[number];
+
+/**
+ * D3 — single entry in the event log. Kind-specific fields are carried in
+ * `details` so the wire payload stays uniform across kinds.
+ */
+export interface DebugEvent {
+  kind: DebugEventKind;
+  timestamp: number;
+  address: string | null;
+  threadId: number | null;
+  /** True iff this event caused the session to enter `paused`. */
+  pausedExecution: boolean;
+  /** Kind-specific fields (bpAddress, exceptionCode, moduleName, etc.). */
+  details?: Record<string, unknown>;
+}
 
 // ─── Registers ──────────────────────────────────────────────────────────────
 

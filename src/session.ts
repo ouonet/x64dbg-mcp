@@ -61,7 +61,13 @@ export class SessionManager {
       pid,
       executable,
       architecture,
-      state: "idle",
+      // D2: sessions are created post-`debug.load`, so the debuggee is paused
+      // at the entry point. Bridge events (T8) will drive subsequent transitions.
+      state: "paused",
+      pauseReason: "system_breakpoint",
+      terminationReason: null,
+      lastEvent: null,
+      recentEvents: [],
       bridgePort,
       createdAt: now,
       lastActivity: now,

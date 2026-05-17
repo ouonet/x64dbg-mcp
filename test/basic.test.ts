@@ -240,7 +240,11 @@ describe("SessionManager", async () => {
     assert.equal(s.architecture, "x64");
     assert.equal(s.pid, 1234);
     assert.equal(s.bridgePort, 50000);
-    assert.equal(s.state, "idle");
+    // D2: sessions are created post-`debug.load` at the entry-point pause.
+    assert.equal(s.state, "paused");
+    assert.equal(s.pauseReason, "system_breakpoint");
+    assert.equal(s.terminationReason, null);
+    assert.deepEqual(s.recentEvents, []);
     assert.ok(typeof s.id === "string" && s.id.length > 0);
   });
 
@@ -644,6 +648,85 @@ describe("ErrorCode and McpError", async () => {
 
   test("E_PORT_EXHAUSTED is registered", () => {
     assert.equal(ErrorCode.E_PORT_EXHAUSTED, "E_PORT_EXHAUSTED");
+  });
+
+  test("v1.2.0 new error codes are registered", () => {
+    assert.equal(ErrorCode.E_PROTOCOL_VERSION, "E_PROTOCOL_VERSION");
+    assert.equal(ErrorCode.E_SESSION_TERMINATED, "E_SESSION_TERMINATED");
+    assert.equal(ErrorCode.E_IO_FAILED, "E_IO_FAILED");
+  });
+});
+
+// ─── v1.2.0 type vocabulary (D3 spec) ────────────────────────────────────────
+
+describe("v1.2.0 type vocabulary", async () => {
+  const types = await importFresh<typeof import("../src/types.js")>("src/types.ts");
+
+  test("PauseReason enum (D3) has all 13 values", () => {
+    // Runtime enum-like constant lets us iterate; the type union must match it.
+    const expected = [
+      "breakpoint",
+      "step",
+      "exception",
+      "tls_callback",
+      "system_breakpoint",
+      "manual_pause",
+      "trace_terminated",
+      "dll_load_break",
+      "dll_unload_break",
+      "thread_create_break",
+      "thread_exit_break",
+      "output_debug_break",
+      "unknown",
+    ].sort();
+    const actual = [...(types.PAUSE_REASONS as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
+  });
+
+  test("TerminationReason enum (D3) has all 4 values", () => {
+    const expected = ["process_exit", "detached", "bridge_lost", "unknown"].sort();
+    const actual = [...(types.TERMINATION_REASONS as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
+  });
+
+  test("DebugEventKind enum (D3) has all 15 values", () => {
+    const expected = [
+      "breakpoint",
+      "step",
+      "exception",
+      "tls_callback",
+      "dll_load",
+      "dll_unload",
+      "thread_create",
+      "thread_exit",
+      "process_create",
+      "process_exit",
+      "system_breakpoint",
+      "manual_pause",
+      "output_debug_string",
+      "trace_terminated",
+      "detached",
+    ].sort();
+    const actual = [...(types.DEBUG_EVENT_KINDS as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
+  });
+
+  test("BpType enum (D3) has 5 values", () => {
+    const expected = ["sw", "hw", "mem", "dll", "exception"].sort();
+    const actual = [...(types.BP_TYPES as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
+  });
+
+  test("BpKind enum (D3) has 3 values", () => {
+    const expected = ["user", "temporary", "system"].sort();
+    const actual = [...(types.BP_KINDS as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
+  });
+
+  test("DebugState (D2) narrowed to 4 values", () => {
+    const expected = ["loading", "running", "paused", "terminated"].sort();
+    const actual = [...(types.DEBUG_STATES as readonly string[])].sort();
+    assert.deepEqual(actual, expected);
   });
 });
 

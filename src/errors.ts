@@ -31,6 +31,12 @@ export const ErrorCode = {
   E_MODULE_NOT_FOUND: "E_MODULE_NOT_FOUND",
   /** No free TCP port could be allocated for a new bridge. */
   E_PORT_EXHAUSTED: "E_PORT_EXHAUSTED",
+  /** Bridge protocol version does not match (added in v1.2.0). */
+  E_PROTOCOL_VERSION: "E_PROTOCOL_VERSION",
+  /** Operation attempted on a session in terminated state (added in v1.2.0). */
+  E_SESSION_TERMINATED: "E_SESSION_TERMINATED",
+  /** File I/O failed in save_memory_dump / create_minidump (added in v1.2.0). */
+  E_IO_FAILED: "E_IO_FAILED",
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
