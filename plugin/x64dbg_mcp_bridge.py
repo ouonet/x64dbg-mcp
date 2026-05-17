@@ -136,7 +136,32 @@ _dispatch_lock = threading.Lock()
 _LOCKLESS_HANDLERS: frozenset[str] = frozenset({
     "debug.listBreakpoints",  # read-only BridgeList query
     "analysis.getModules",    # module list query only
+    "protocol.probe",         # version handshake — no x64dbg calls
+    "state.get",              # read-only state snapshot
 })
+
+# T5 — bridge protocol version (D10).
+BRIDGE_PROTOCOL_VERSION = "2"
+
+
+def _check_protocol_version(req: dict) -> Optional[str]:
+    """Return 'E_PROTOCOL_VERSION' if req carries a mismatched protocolVersion;
+    return None to allow the request through (missing field = backward-compat)."""
+    pv = req.get("protocolVersion")
+    if pv is not None and pv != BRIDGE_PROTOCOL_VERSION:
+        return "E_PROTOCOL_VERSION"
+    return None
+
+
+def handle_protocol_probe(_params: dict) -> dict:
+    """T5 — D10 protocol handshake: returns server version + capability list."""
+    return {
+        "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+        "capabilities": sorted(_handlers.keys()),
+    }
+
+
+_handlers["protocol.probe"] = handle_protocol_probe
 
 
 # ---------------------------------------------------------------------------
@@ -2800,6 +2825,13 @@ class BridgeServer:
             )
         ):
             return {"id": req_id, "success": False, "error": "Unauthorized bridge request"}
+
+        # T5 — reject requests whose protocolVersion doesn't match ours (D10).
+        # protocol.probe is exempt so clients can discover the server version.
+        if method != "protocol.probe":
+            version_error = _check_protocol_version(req)
+            if version_error:
+                return {"id": req_id, "success": False, "error": version_error}
 
         handler_fn = _handlers.get(method)
         if not handler_fn:

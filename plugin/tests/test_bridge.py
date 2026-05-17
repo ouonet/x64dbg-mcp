@@ -690,6 +690,50 @@ def test_t4_bpkind_user_when_payload_specifies():
     _ok("T4: explicit bpKind=user preserved")
 
 
+def test_t5_protocol_version_constant():
+    """T5 — BRIDGE_PROTOCOL_VERSION must be '2'."""
+    assert bridge.BRIDGE_PROTOCOL_VERSION == "2"
+    _ok("T5: BRIDGE_PROTOCOL_VERSION == '2'")
+
+
+def test_t5_protocol_probe_returns_shape():
+    """T5 — protocol.probe returns { protocolVersion, capabilities }."""
+    resp = bridge.handle_protocol_probe({})
+    assert resp["protocolVersion"] == "2", f"got {resp['protocolVersion']}"
+    assert isinstance(resp["capabilities"], list)
+    assert len(resp["capabilities"]) > 0
+    assert "protocol.probe" in resp["capabilities"]
+    _ok("T5: protocol.probe returns { protocolVersion='2', capabilities=[...] }")
+
+
+def test_t5_check_protocol_version_rejects_v1():
+    """T5 — _check_protocol_version returns E_PROTOCOL_VERSION for v1."""
+    err = bridge._check_protocol_version({"protocolVersion": "1"})
+    assert err == "E_PROTOCOL_VERSION", f"got {err!r}"
+    _ok("T5: _check_protocol_version rejects protocolVersion='1'")
+
+
+def test_t5_check_protocol_version_accepts_v2():
+    """T5 — _check_protocol_version returns None for v2."""
+    err = bridge._check_protocol_version({"protocolVersion": "2"})
+    assert err is None, f"expected None, got {err!r}"
+    _ok("T5: _check_protocol_version accepts protocolVersion='2'")
+
+
+def test_t5_check_protocol_version_accepts_missing():
+    """T5 — _check_protocol_version returns None when field absent (backward compat)."""
+    err = bridge._check_protocol_version({})
+    assert err is None, f"expected None, got {err!r}"
+    _ok("T5: _check_protocol_version accepts missing protocolVersion")
+
+
+def test_t5_protocol_probe_registered_as_handler():
+    """T5 — 'protocol.probe' is in _handlers and is lockless."""
+    assert "protocol.probe" in bridge._handlers
+    assert "protocol.probe" in bridge._LOCKLESS_HANDLERS
+    _ok("T5: protocol.probe registered and lockless")
+
+
 def test_dispatch_lock_mutual_exclusion():
     import time
     lock = bridge._dispatch_lock
@@ -751,6 +795,12 @@ _tests = [
     test_t4_hardcoded_int3_remains_as_exception,
     test_t4_bpkind_temporary_for_temp_breakpoint,
     test_t4_bpkind_user_when_payload_specifies,
+    test_t5_protocol_version_constant,
+    test_t5_protocol_probe_returns_shape,
+    test_t5_check_protocol_version_rejects_v1,
+    test_t5_check_protocol_version_accepts_v2,
+    test_t5_check_protocol_version_accepts_missing,
+    test_t5_protocol_probe_registered_as_handler,
     test_dispatch_lock_mutual_exclusion,
 ]
 
