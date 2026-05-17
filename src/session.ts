@@ -38,10 +38,14 @@ class StateChangeCV {
   }
 }
 
+const TERMINATED_RETENTION_MS = 30_000;
+
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private stateCVs = new Map<string, StateChangeCV>();
   private gcTimer: ReturnType<typeof setInterval> | null = null;
+  // T9 — injectable clock for fast-clock tests.
+  private _now: () => number = Date.now;
 
   start(): void {
     this.gcTimer = setInterval(
@@ -200,6 +204,9 @@ export class SessionManager {
     if (!s) return;
 
     s.state = "terminated";
+    // T9 — record termination timestamp for 30s retention window.
+    // Use _now so tests can inject a fake clock.
+    s.terminatedAt = this._now();
 
     // Lazy imports to avoid circular dependencies with bridgeRegistry / launcher.
     try {
@@ -223,17 +230,23 @@ export class SessionManager {
       logger.warn(`terminate(${id}): launcher import failed: ${err}`);
     }
 
-    this.sessions.delete(id);
-    this.stateCVs.delete(id);
-    logger.info(`Session terminated: ${id}`);
+    // T9 — do NOT delete yet; GC will reap after TERMINATED_RETENTION_MS.
+    logger.info(`Session terminated: ${id} (30s retention window starts)`);
   }
 
   // ── Housekeeping ────────────────────────────────────────────────────────
 
   private collectExpired(): void {
-    const now = Date.now();
+    const now = this._now();
     for (const [id, s] of this.sessions) {
-      if (now - s.lastActivity > config.sessionTimeoutMs) {
+      if (s.state === "terminated") {
+        // T9 — reap terminated sessions after the 30s retention window.
+        if (s.terminatedAt !== undefined && now - s.terminatedAt > TERMINATED_RETENTION_MS) {
+          logger.info(`Session ${id} retention expired, removing`);
+          this.sessions.delete(id);
+          this.stateCVs.delete(id);
+        }
+      } else if (now - s.lastActivity > config.sessionTimeoutMs) {
         logger.warn(`Session ${id} expired (idle > ${config.sessionTimeoutMs}ms)`);
         void this.terminate(id);
       }

@@ -329,6 +329,68 @@ describe("SessionManager", async () => {
   });
 });
 
+// ─── T9: terminated session 30s retention ────────────────────────────────────
+
+describe("T9: terminated session 30s retention", async () => {
+  const { SessionManager } = await importFresh<
+    { SessionManager: typeof import("../src/session.js").SessionManager }
+  >("src/session.ts");
+
+  test("T9: terminated session readable at 29s, reaped at 31s (fast clock)", async () => {
+    const mgr = new SessionManager();
+    let fakeNow = 1_000_000;
+    (mgr as Record<string, unknown>)["_now"] = () => fakeNow;
+
+    const s = mgr.create("test.exe", "x64", 1, 53000);
+    await mgr.terminate(s.id);
+
+    assert.ok(mgr.has(s.id), "session must stay in map after terminate()");
+    assert.equal(mgr.peek(s.id).state, "terminated");
+
+    fakeNow += 29_000;
+    (mgr as Record<string, unknown>)["collectExpired"]?.();
+    assert.ok(mgr.has(s.id), "session still present at t+29s");
+
+    fakeNow += 2_000;
+    (mgr as Record<string, unknown>)["collectExpired"]?.();
+    assert.ok(!mgr.has(s.id), "session reaped at t+31s");
+  });
+
+  test("T9: reads during window do not extend retention", async () => {
+    const mgr = new SessionManager();
+    let fakeNow = 2_000_000;
+    (mgr as Record<string, unknown>)["_now"] = () => fakeNow;
+
+    const s = mgr.create("test.exe", "x64", 1, 53001);
+    await mgr.terminate(s.id);
+    const terminatedAt = mgr.peek(s.id).terminatedAt!;
+    assert.ok(terminatedAt > 0, "terminatedAt must be set");
+
+    // reads at 10s, 20s, 29s
+    fakeNow = terminatedAt + 10_000;
+    mgr.peek(s.id);
+    fakeNow = terminatedAt + 20_000;
+    mgr.peek(s.id);
+    fakeNow = terminatedAt + 29_000;
+    mgr.peek(s.id);
+
+    // at 31s, must be reaped regardless of reads
+    fakeNow = terminatedAt + 31_000;
+    (mgr as Record<string, unknown>)["collectExpired"]?.();
+    assert.ok(!mgr.has(s.id), "reads must not extend the 30s retention window");
+  });
+
+  test("T9: peek() returns terminated session during window without throwing", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1, 53002);
+    await mgr.terminate(s.id);
+
+    const retrieved = mgr.peek(s.id);
+    assert.equal(retrieved.state, "terminated");
+    assert.equal(retrieved.id, s.id);
+  });
+});
+
 // ─── T8: SessionManager state model + state-change CV ────────────────────────
 
 import { EventEmitter } from "node:events";
