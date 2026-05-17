@@ -7,13 +7,40 @@
  */
 
 import crypto from "crypto";
+import { EventEmitter } from "events";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { ErrorCode, McpError } from "./errors.js";
-import type { Session, DebugState, Breakpoint, ModuleInfo } from "./types.js";
+import type { Session, DebugState, Breakpoint, ModuleInfo, DebugEvent, PauseReason, TerminationReason } from "./types.js";
+
+/** T8 — D6 per-session state-change condition variable. */
+class StateChangeCV {
+  private waiters: Array<(woken: boolean) => void> = [];
+
+  signal(): void {
+    const ws = this.waiters.splice(0);
+    for (const wake of ws) wake(true);
+  }
+
+  wait(timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let done = false;
+      const wake = (woken: boolean): void => {
+        if (!done) { done = true; resolve(woken); }
+      };
+      this.waiters.push(wake);
+      setTimeout(() => {
+        const idx = this.waiters.indexOf(wake);
+        if (idx >= 0) this.waiters.splice(idx, 1);
+        wake(false);
+      }, timeoutMs);
+    });
+  }
+}
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
+  private stateCVs = new Map<string, StateChangeCV>();
   private gcTimer: ReturnType<typeof setInterval> | null = null;
 
   start(): void {
@@ -76,6 +103,7 @@ export class SessionManager {
     };
 
     this.sessions.set(id, session);
+    this.stateCVs.set(id, new StateChangeCV());
     logger.info(
       `Session created: ${id} → ${executable} (${architecture}, port ${bridgePort})`,
     );
@@ -108,6 +136,44 @@ export class SessionManager {
     s.state = state;
     s.lastActivity = Date.now();
     logger.debug(`Session ${id} state → ${state}`);
+  }
+
+  // ── T8: event wiring + state-change CV (D2, D4, D6) ─────────────────────
+
+  applyDebugEvent(id: string, event: DebugEvent): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.lastEvent = event;
+    s.recentEvents.push(event);
+    if (s.recentEvents.length > 50) s.recentEvents.shift();
+    s.lastActivity = Date.now();
+  }
+
+  applyStateChange(id: string, bridgeState: {
+    state: DebugState;
+    pauseReason: PauseReason | null;
+    terminationReason: TerminationReason | null;
+  }): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.state = bridgeState.state;
+    s.pauseReason = bridgeState.pauseReason;
+    s.terminationReason = bridgeState.terminationReason;
+    s.lastActivity = Date.now();
+    this.stateCVs.get(id)?.signal();
+  }
+
+  wireClient(id: string, client: EventEmitter): void {
+    client.on("debugEvent", (event: DebugEvent) => this.applyDebugEvent(id, event));
+    client.on("stateChange", (state: Parameters<SessionManager["applyStateChange"]>[1]) =>
+      this.applyStateChange(id, state)
+    );
+  }
+
+  waitForStateChange(id: string, timeoutMs: number): Promise<boolean> {
+    const cv = this.stateCVs.get(id);
+    if (!cv) return Promise.resolve(false);
+    return cv.wait(timeoutMs);
   }
 
   setModules(id: string, modules: ModuleInfo[]): void {
@@ -158,6 +224,7 @@ export class SessionManager {
     }
 
     this.sessions.delete(id);
+    this.stateCVs.delete(id);
     logger.info(`Session terminated: ${id}`);
   }
 

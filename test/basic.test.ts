@@ -329,6 +329,100 @@ describe("SessionManager", async () => {
   });
 });
 
+// ─── T8: SessionManager state model + state-change CV ────────────────────────
+
+import { EventEmitter } from "node:events";
+
+describe("T8: SessionManager state model + state-change CV", async () => {
+  const { SessionManager } = await importFresh<
+    { SessionManager: typeof import("../src/session.js").SessionManager }
+  >("src/session.ts");
+
+  test("T8: wireClient debugEvent updates lastEvent + recentEvents", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1234, 52000);
+    const fakeClient = new EventEmitter();
+    mgr.wireClient(s.id, fakeClient);
+
+    const ev = {
+      kind: "breakpoint" as const,
+      address: "0x401000",
+      threadId: 1,
+      pausedExecution: true,
+      timestamp: Date.now(),
+      details: {},
+    };
+    fakeClient.emit("debugEvent", ev);
+
+    const updated = mgr.peek(s.id);
+    assert.equal(updated.recentEvents.length, 1);
+    assert.deepEqual(updated.lastEvent?.kind, "breakpoint");
+    await mgr.terminate(s.id);
+  });
+
+  test("T8: wireClient stateChange updates session state fields (D2 invariants)", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1234, 52001);
+    const fakeClient = new EventEmitter();
+    mgr.wireClient(s.id, fakeClient);
+
+    fakeClient.emit("stateChange", {
+      state: "paused",
+      pauseReason: "breakpoint",
+      terminationReason: null,
+    });
+
+    const updated = mgr.peek(s.id);
+    assert.equal(updated.state, "paused");
+    assert.equal(updated.pauseReason, "breakpoint");
+    assert.equal(updated.terminationReason, null); // D2: null when paused
+    await mgr.terminate(s.id);
+  });
+
+  test("T8: D2 invariant — terminationReason null when running", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1234, 52002);
+    const fakeClient = new EventEmitter();
+    mgr.wireClient(s.id, fakeClient);
+
+    fakeClient.emit("stateChange", { state: "running", pauseReason: null, terminationReason: null });
+    const updated = mgr.peek(s.id);
+    assert.equal(updated.state, "running");
+    assert.equal(updated.pauseReason, null); // D2: null when running
+    assert.equal(updated.terminationReason, null);
+    await mgr.terminate(s.id);
+  });
+
+  test("T8: stateChange signals CV — multiple concurrent waiters all wake", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1234, 52003);
+    const fakeClient = new EventEmitter();
+    mgr.wireClient(s.id, fakeClient);
+
+    const p1 = mgr.waitForStateChange(s.id, 2000);
+    const p2 = mgr.waitForStateChange(s.id, 2000);
+    const p3 = mgr.waitForStateChange(s.id, 2000);
+
+    fakeClient.emit("stateChange", { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    assert.equal(r1, true, "waiter 1 should wake on state change");
+    assert.equal(r2, true, "waiter 2 should wake on state change");
+    assert.equal(r3, true, "waiter 3 should wake on state change");
+    await mgr.terminate(s.id);
+  });
+
+  test("T8: waitForStateChange times out → returns false", async () => {
+    const mgr = new SessionManager();
+    const s = mgr.create("test.exe", "x64", 1234, 52004);
+    const start = Date.now();
+    const result = await mgr.waitForStateChange(s.id, 100);
+    assert.equal(result, false);
+    assert.ok(Date.now() - start >= 90, "should have waited ~100ms");
+    await mgr.terminate(s.id);
+  });
+});
+
 // ─── BridgeClient (offline) ───────────────────────────────────────────────────
 
 import net from "node:net";
