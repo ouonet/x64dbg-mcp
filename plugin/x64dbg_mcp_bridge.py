@@ -27,6 +27,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Callable, Dict, Optional
 
@@ -136,6 +137,76 @@ _LOCKLESS_HANDLERS: frozenset[str] = frozenset({
     "debug.listBreakpoints",  # read-only BridgeList query
     "analysis.getModules",    # module list query only
 })
+
+
+# ---------------------------------------------------------------------------
+# T2 — x64dbg callback handlers and per-session event log
+# (v1.2.0 spec D3)
+#
+# These constants mirror x64dbg's CBTYPE enum from bridgemain.h. The
+# integer values are part of the x64dbg plugin ABI and MUST match exactly.
+# ---------------------------------------------------------------------------
+
+CB_INITDEBUG = 1
+CB_STOPDEBUG = 2
+CB_CREATEPROCESS = 3
+CB_EXITPROCESS = 4
+CB_CREATETHREAD = 5
+CB_EXITTHREAD = 6
+CB_SYSTEMBREAKPOINT = 7
+CB_LOADDLL = 8
+CB_UNLOADDLL = 9
+CB_OUTPUTDEBUGSTRING = 10
+CB_EXCEPTION = 11
+CB_BREAKPOINT = 12
+CB_PAUSEDEBUG = 13
+CB_RESUMEDEBUG = 14
+CB_STEPPED = 15
+
+# Map x64dbg callback type → DebugEventKind (D3).
+# Callbacks that drive the state machine but produce no user-visible event
+# (INITDEBUG, STOPDEBUG, PAUSEDEBUG, RESUMEDEBUG) are intentionally absent.
+_CB_TO_EVENT_KIND: Dict[int, str] = {
+    CB_CREATEPROCESS: "process_create",
+    CB_EXITPROCESS: "process_exit",
+    CB_CREATETHREAD: "thread_create",
+    CB_EXITTHREAD: "thread_exit",
+    CB_SYSTEMBREAKPOINT: "system_breakpoint",
+    CB_LOADDLL: "dll_load",
+    CB_UNLOADDLL: "dll_unload",
+    CB_OUTPUTDEBUGSTRING: "output_debug_string",
+    CB_EXCEPTION: "exception",
+    CB_BREAKPOINT: "breakpoint",
+    CB_STEPPED: "step",
+}
+
+# Per-session event logs. T3/T4 will turn this into a ring buffer + state
+# machine; T2 stores an unbounded list so the callback wiring can be tested
+# in isolation.
+_session_events: Dict[str, list] = {}
+_session_events_lock = threading.Lock()
+
+
+def _emit_debug_event(session_id: str, cb_type: int, payload: dict):
+    """
+    Convert an x64dbg callback into a DebugEvent (D3) and append it to the
+    named session's event log. Returns the constructed event dict, or None
+    when the callback has no event mapping (state-machine internal cb types).
+    """
+    kind = _CB_TO_EVENT_KIND.get(cb_type)
+    if kind is None:
+        return None
+    event = {
+        "kind": kind,
+        "timestamp": int(time.time() * 1000),
+        "address": payload.get("address"),
+        "threadId": payload.get("threadId"),
+        "pausedExecution": bool(payload.get("pausedExecution", False)),
+        "details": dict(payload.get("details", {})),
+    }
+    with _session_events_lock:
+        _session_events.setdefault(session_id, []).append(event)
+    return event
 
 
 def handler(method: str):

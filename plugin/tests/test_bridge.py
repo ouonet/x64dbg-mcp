@@ -302,6 +302,113 @@ def test_tls_uses_section_lookup():
     _ok("handle_detect_anti_debug uses section-based TLS lookup")
 
 
+def test_t2_callback_constants_match_x64dbg_enum():
+    """D3 — x64dbg CBTYPE enum values must match exactly."""
+    assert bridge.CB_INITDEBUG == 1
+    assert bridge.CB_STOPDEBUG == 2
+    assert bridge.CB_CREATEPROCESS == 3
+    assert bridge.CB_EXITPROCESS == 4
+    assert bridge.CB_CREATETHREAD == 5
+    assert bridge.CB_EXITTHREAD == 6
+    assert bridge.CB_SYSTEMBREAKPOINT == 7
+    assert bridge.CB_LOADDLL == 8
+    assert bridge.CB_UNLOADDLL == 9
+    assert bridge.CB_OUTPUTDEBUGSTRING == 10
+    assert bridge.CB_EXCEPTION == 11
+    assert bridge.CB_BREAKPOINT == 12
+    assert bridge.CB_PAUSEDEBUG == 13
+    assert bridge.CB_RESUMEDEBUG == 14
+    assert bridge.CB_STEPPED == 15
+    _ok("T2: CB_* constants match x64dbg CBTYPE enum")
+
+
+def test_t2_emit_debug_event_breakpoint():
+    """T2 — CB_BREAKPOINT produces a DebugEvent with kind=breakpoint."""
+    bridge._session_events.clear()
+    ev = bridge._emit_debug_event("sess-1", bridge.CB_BREAKPOINT, {
+        "address": "0x401000",
+        "threadId": 100,
+        "pausedExecution": True,
+        "details": {"bpType": "sw", "bpKind": "user", "bpAddress": "0x401000"},
+    })
+    assert ev["kind"] == "breakpoint", f"expected breakpoint, got {ev['kind']}"
+    assert ev["pausedExecution"] is True
+    assert ev["address"] == "0x401000"
+    assert ev["threadId"] == 100
+    assert ev["details"]["bpType"] == "sw"
+    assert "sess-1" in bridge._session_events
+    assert len(bridge._session_events["sess-1"]) == 1
+    _ok("T2: CB_BREAKPOINT → DebugEvent(kind=breakpoint)")
+
+
+def test_t2_emit_debug_event_all_user_visible_kinds():
+    """T2 — every D3 DebugEventKind has a CB_* mapping."""
+    bridge._session_events.clear()
+    sid = "sess-2"
+    cases = [
+        (bridge.CB_BREAKPOINT, "breakpoint"),
+        (bridge.CB_STEPPED, "step"),
+        (bridge.CB_EXCEPTION, "exception"),
+        (bridge.CB_LOADDLL, "dll_load"),
+        (bridge.CB_UNLOADDLL, "dll_unload"),
+        (bridge.CB_CREATETHREAD, "thread_create"),
+        (bridge.CB_EXITTHREAD, "thread_exit"),
+        (bridge.CB_CREATEPROCESS, "process_create"),
+        (bridge.CB_EXITPROCESS, "process_exit"),
+        (bridge.CB_SYSTEMBREAKPOINT, "system_breakpoint"),
+        (bridge.CB_OUTPUTDEBUGSTRING, "output_debug_string"),
+    ]
+    for cb_type, expected_kind in cases:
+        ev = bridge._emit_debug_event(sid, cb_type, {})
+        assert ev is not None, f"CB type {cb_type} → no event"
+        assert ev["kind"] == expected_kind, f"CB {cb_type}: got {ev['kind']}, want {expected_kind}"
+    # tls_callback / manual_pause / trace_terminated / detached are synthetic
+    # in T3+; they aren't emitted by raw CB_*.
+    assert len(bridge._session_events[sid]) == len(cases)
+    _ok("T2: all CB_* kinds map to correct DebugEventKind")
+
+
+def test_t2_emit_debug_event_state_callbacks_emit_nothing():
+    """T2 — internal state-machine CB types do not produce DebugEvents."""
+    bridge._session_events.clear()
+    for cb_type in (
+        bridge.CB_INITDEBUG, bridge.CB_STOPDEBUG,
+        bridge.CB_PAUSEDEBUG, bridge.CB_RESUMEDEBUG,
+    ):
+        ev = bridge._emit_debug_event("sess-3", cb_type, {})
+        assert ev is None, f"CB {cb_type} should not produce a DebugEvent"
+    assert "sess-3" not in bridge._session_events or bridge._session_events.get("sess-3", []) == []
+    _ok("T2: CB_INITDEBUG/STOPDEBUG/PAUSEDEBUG/RESUMEDEBUG produce no events")
+
+
+def test_t2_emit_debug_event_default_fields():
+    """T2 — DebugEvent has all required D3 fields with sensible defaults."""
+    bridge._session_events.clear()
+    ev = bridge._emit_debug_event("sess-4", bridge.CB_LOADDLL, {})
+    assert ev["kind"] == "dll_load"
+    assert isinstance(ev["timestamp"], int)
+    assert ev["timestamp"] > 0
+    assert ev["address"] is None
+    assert ev["threadId"] is None
+    assert ev["pausedExecution"] is False
+    assert isinstance(ev["details"], dict)
+    _ok("T2: DebugEvent has all required fields with sensible defaults")
+
+
+def test_t2_per_session_event_isolation():
+    """T2 — events are appended only to the named session."""
+    bridge._session_events.clear()
+    bridge._emit_debug_event("alpha", bridge.CB_BREAKPOINT, {})
+    bridge._emit_debug_event("beta", bridge.CB_LOADDLL, {})
+    bridge._emit_debug_event("alpha", bridge.CB_STEPPED, {})
+    assert len(bridge._session_events["alpha"]) == 2
+    assert len(bridge._session_events["beta"]) == 1
+    assert bridge._session_events["alpha"][0]["kind"] == "breakpoint"
+    assert bridge._session_events["alpha"][1]["kind"] == "step"
+    assert bridge._session_events["beta"][0]["kind"] == "dll_load"
+    _ok("T2: per-session event log is isolated")
+
+
 def test_dispatch_lock_mutual_exclusion():
     import time
     lock = bridge._dispatch_lock
@@ -343,6 +450,12 @@ _tests = [
     test_set_breakpoint_command_selection,
     test_infer_stop_reason_detects_memory_breakpoint_by_snapshot_change,
     test_tls_uses_section_lookup,
+    test_t2_callback_constants_match_x64dbg_enum,
+    test_t2_emit_debug_event_breakpoint,
+    test_t2_emit_debug_event_all_user_visible_kinds,
+    test_t2_emit_debug_event_state_callbacks_emit_nothing,
+    test_t2_emit_debug_event_default_fields,
+    test_t2_per_session_event_isolation,
     test_dispatch_lock_mutual_exclusion,
 ]
 

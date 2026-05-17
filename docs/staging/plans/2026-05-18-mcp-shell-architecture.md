@@ -14,7 +14,7 @@ Each task is ≤ 60 min, leaves the repo green, and references a spec decision (
   acceptance: `npx tsc --noEmit` passes; unit test asserts new ErrorCode values are unique + `PauseReason` / `TerminationReason` / `DebugEventKind` / `bpType` / `bpKind` enums match D3 exactly.
   spec:       D3 (enums), D10 (error codes)
 
-- [ ] T2: Bridge — register all x64dbg callbacks
+- [x] T2: Bridge — register all x64dbg callbacks
   goal:       Hook every callback listed in D3 sources; capture event payloads into a per-session in-memory log (no push channel yet).
   files:      `plugin/x64dbg_mcp_bridge.py`, `plugin/x64dbg_bridge_sdk.py`
   acceptance: `python plugin/tests/test_bridge.py` includes a new offline test that synthesizes each callback and asserts a `DebugEvent` shape is recorded.
