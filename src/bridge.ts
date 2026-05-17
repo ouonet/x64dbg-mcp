@@ -82,12 +82,24 @@ export class BridgeClient extends EventEmitter {
       this.socket.on("connect", () => {
         clearTimeout(timer);
         this.connected = true;
-        this.connecting = false;
         this.reconnectAttempts = 0;
         this.buffer = "";
-        logger.info(`Bridge connected to ${this.host}:${this.port}`);
-        this.emit("connected-result");
-        resolve();
+        // T7 — protocol.probe handshake (D10): verify bridge version before resolving.
+        void (async () => {
+          try {
+            await this.doProbeHandshake();
+            this.connecting = false;
+            logger.info(`Bridge connected to ${this.host}:${this.port}`);
+            this.emit("connected-result");
+            resolve();
+          } catch (err) {
+            this.connecting = false;
+            this.cleanup();
+            const error = err instanceof Error ? err : new Error(String(err));
+            this.emit("connected-result", error);
+            reject(error);
+          }
+        })();
       });
 
       this.socket.on("data", (chunk) => this.onData(chunk));
@@ -212,10 +224,14 @@ export class BridgeClient extends EventEmitter {
 
       try {
         const msg = JSON.parse(line);
-        if (msg.event) {
-          this.handleEvent(msg as BridgeEvent);
+        if (msg.type === "debugEvent") {
+          this.emit("debugEvent", msg.event);
+        } else if (msg.type === "stateChange") {
+          this.emit("stateChange", msg.state);
         } else if (msg.id) {
           this.handleResponse(msg as BridgeResponse);
+        } else if (msg.event) {
+          this.handleEvent(msg as BridgeEvent);
         }
       } catch {
         logger.warn(`Bridge received malformed JSON: ${line}`);
@@ -237,6 +253,20 @@ export class BridgeClient extends EventEmitter {
   private handleEvent(event: BridgeEvent): void {
     logger.debug(`Bridge event: ${event.event}`);
     this.emit("bridge-event", event);
+  }
+
+  private async doProbeHandshake(): Promise<void> {
+    let data: Record<string, unknown>;
+    try {
+      data = await this.call<Record<string, unknown>>("protocol.probe", {}, 5_000);
+    } catch (e) {
+      throw new Error(`E_PROTOCOL_VERSION: bridge does not support protocol.probe (${String(e)})`);
+    }
+    if (data.protocolVersion !== BRIDGE_PROTOCOL_VERSION) {
+      throw new Error(
+        `E_PROTOCOL_VERSION: bridge version ${String(data.protocolVersion)}, expected ${BRIDGE_PROTOCOL_VERSION}`
+      );
+    }
   }
 
   private rejectAllPending(reason: string): void {

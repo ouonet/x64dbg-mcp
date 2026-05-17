@@ -625,6 +625,129 @@ describe("BridgeClient (mock TCP server)", async () => {
   });
 });
 
+// ─── BridgeClient T7 — event dispatch + protocol.probe handshake ─────────────
+
+/**
+ * Mock bridge that understands protocol.probe (v2) and optionally sends
+ * unsolicited push frames after the probe response.
+ */
+function createV2MockBridge(opts: {
+  probeVersion?: string;   // version to report; default "2"
+  probeError?: string;     // if set, return this error for protocol.probe
+  pushFrames?: unknown[];  // unsolicited frames sent after probe response
+}): Promise<{ server: net.Server; port: number }> {
+  const { probeVersion = "2", probeError, pushFrames = [] } = opts;
+  const server = net.createServer((sock) => {
+    let buf = "";
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let req: Record<string, unknown>;
+        try { req = JSON.parse(line); } catch { continue; }
+        if (req["method"] === "protocol.probe") {
+          if (probeError) {
+            sock.write(JSON.stringify({ id: req["id"], success: false, error: probeError }) + "\n");
+          } else {
+            sock.write(JSON.stringify({
+              id: req["id"], success: true,
+              data: { protocolVersion: probeVersion, capabilities: ["protocol.probe"] },
+            }) + "\n");
+            for (const frame of pushFrames) {
+              sock.write(JSON.stringify(frame) + "\n");
+            }
+          }
+        } else {
+          sock.write(JSON.stringify({ id: req["id"], success: true, data: {} }) + "\n");
+        }
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as net.AddressInfo;
+      resolve({ server, port: addr.port });
+    });
+  });
+}
+
+describe("BridgeClient T7 — event dispatch + protocol.probe", async () => {
+  const { BridgeClient } = await importFresh<
+    { BridgeClient: typeof import("../src/bridge.js").BridgeClient }
+  >("src/bridge.ts");
+
+  test("T7: routes debugEvent push frames via emit('debugEvent')", async () => {
+    const pushFrames = [
+      { type: "debugEvent", event: { kind: "breakpoint", address: "0x401000" } },
+      { type: "debugEvent", event: { kind: "step", address: "0x401001" } },
+    ];
+    const { server, port } = await createV2MockBridge({ pushFrames });
+    const b = new BridgeClient("127.0.0.1", port);
+    const events: unknown[] = [];
+    b.on("debugEvent", (e) => events.push(e));
+    try {
+      await b.connect();
+      await new Promise<void>((r) => setTimeout(r, 100)); // let frames arrive
+      assert.equal(events.length, 2, `expected 2 debugEvent, got ${events.length}`);
+      assert.deepEqual((events[0] as Record<string, unknown>)["kind"], "breakpoint");
+      assert.deepEqual((events[1] as Record<string, unknown>)["kind"], "step");
+    } finally {
+      await b.disconnect();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test("T7: routes stateChange push frames via emit('stateChange')", async () => {
+    const pushFrames = [
+      { type: "stateChange", state: { state: "paused", pauseReason: "breakpoint" } },
+    ];
+    const { server, port } = await createV2MockBridge({ pushFrames });
+    const b = new BridgeClient("127.0.0.1", port);
+    const states: unknown[] = [];
+    b.on("stateChange", (s) => states.push(s));
+    try {
+      await b.connect();
+      await new Promise<void>((r) => setTimeout(r, 100));
+      assert.equal(states.length, 1);
+      assert.deepEqual((states[0] as Record<string, unknown>)["state"], "paused");
+    } finally {
+      await b.disconnect();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test("T7: protocol.probe version mismatch → connect() rejects with E_PROTOCOL_VERSION", async () => {
+    const { server, port } = await createV2MockBridge({ probeVersion: "99" });
+    const b = new BridgeClient("127.0.0.1", port);
+    try {
+      await assert.rejects(
+        () => b.connect(),
+        /E_PROTOCOL_VERSION/,
+      );
+    } finally {
+      await b.disconnect().catch(() => {});
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test("T7: protocol.probe error → connect() rejects with E_PROTOCOL_VERSION", async () => {
+    const { server, port } = await createV2MockBridge({ probeError: "E_PROTOCOL_VERSION" });
+    const b = new BridgeClient("127.0.0.1", port);
+    try {
+      await assert.rejects(
+        () => b.connect(),
+        /E_PROTOCOL_VERSION/,
+      );
+    } finally {
+      await b.disconnect().catch(() => {});
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
 // ─── ErrorCode / McpError ────────────────────────────────────────────────────
 
 describe("ErrorCode and McpError", async () => {

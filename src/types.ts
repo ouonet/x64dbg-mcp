@@ -376,7 +376,7 @@ export interface SuspiciousApiEntry {
 //   moduleBase        → module_base
 //   protocolVersion   → protocol_version (checked server-side only)
 
-export const BRIDGE_PROTOCOL_VERSION = "1" as const;
+export const BRIDGE_PROTOCOL_VERSION = "2" as const;
 
 export interface BridgeRequest {
   id: string;
