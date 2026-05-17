@@ -409,6 +409,151 @@ def test_t2_per_session_event_isolation():
     _ok("T2: per-session event log is isolated")
 
 
+def test_t3_state_machine_initial_state():
+    """T3 — a fresh session starts at state="loading", reasons null."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    st = bridge._get_session_state("sess-A")
+    assert st["state"] == "loading"
+    assert st["pauseReason"] is None
+    assert st["terminationReason"] is None
+    assert st["lastEvent"] is None
+    assert st["recentEvents"] == []
+    _ok("T3: session initial state is loading + null reasons")
+
+
+def test_t3_state_machine_initdebug_to_system_breakpoint():
+    """T3 — InitDebug then SystemBreakpoint transitions loading→paused."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    bridge._handle_callback("sess-B", bridge.CB_INITDEBUG, {})
+    st = bridge._get_session_state("sess-B")
+    assert st["state"] == "loading"
+    bridge._handle_callback("sess-B", bridge.CB_SYSTEMBREAKPOINT, {
+        "address": "0x77000000", "threadId": 100,
+    })
+    st = bridge._get_session_state("sess-B")
+    assert st["state"] == "paused", f"got {st['state']}"
+    assert st["pauseReason"] == "system_breakpoint"
+    assert st["terminationReason"] is None
+    assert st["lastEvent"]["kind"] == "system_breakpoint"
+    _ok("T3: InitDebug + SystemBreakpoint → state=paused, pauseReason=system_breakpoint")
+
+
+def test_t3_state_machine_pause_resume_cycle():
+    """T3 — RESUMEDEBUG → running, BREAKPOINT → paused, repeat."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-C"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    st = bridge._get_session_state(sid)
+    assert st["state"] == "running"
+    assert st["pauseReason"] is None, "pauseReason must clear on resume"
+
+    bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+        "address": "0x401000", "threadId": 100, "pausedExecution": True,
+    })
+    st = bridge._get_session_state(sid)
+    assert st["state"] == "paused"
+    assert st["pauseReason"] == "breakpoint"
+    _ok("T3: pause/resume cycle drives state correctly")
+
+
+def test_t3_state_machine_terminates_on_exitprocess():
+    """T3 — CB_EXITPROCESS → state=terminated, terminationReason=process_exit."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-D"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_EXITPROCESS, {
+        "details": {"exitCode": 0},
+    })
+    st = bridge._get_session_state(sid)
+    assert st["state"] == "terminated"
+    assert st["terminationReason"] == "process_exit"
+    assert st["pauseReason"] is None
+    _ok("T3: CB_EXITPROCESS → terminated/process_exit")
+
+
+def test_t3_dll_load_break_pause_reason():
+    """T3 — pausing DLL load uses pauseReason='dll_load_break'."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-E"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_LOADDLL, {
+        "pausedExecution": True,
+        "details": {"moduleName": "ntdll.dll"},
+    })
+    st = bridge._get_session_state(sid)
+    assert st["state"] == "paused"
+    assert st["pauseReason"] == "dll_load_break", f"got {st['pauseReason']}"
+    _ok("T3: pausing dll_load → pauseReason='dll_load_break'")
+
+
+def test_t3_non_pausing_event_keeps_state():
+    """T3 — non-pausing dll_load updates lastEvent but not state or pauseReason."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-F"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    # observe DLL load without pausing
+    bridge._handle_callback(sid, bridge.CB_LOADDLL, {
+        "pausedExecution": False,
+        "details": {"moduleName": "kernel32.dll"},
+    })
+    st = bridge._get_session_state(sid)
+    assert st["state"] == "running", f"state should stay running, got {st['state']}"
+    assert st["pauseReason"] is None
+    assert st["lastEvent"]["kind"] == "dll_load"
+    _ok("T3: non-pausing dll_load keeps state=running, updates lastEvent")
+
+
+def test_t3_recent_events_ring_buffer_caps_at_50():
+    """T3 — recentEvents holds at most 50 entries, oldest dropped (D4)."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-G"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    # 60 dll_load events (non-pausing)
+    for i in range(60):
+        bridge._handle_callback(sid, bridge.CB_LOADDLL, {
+            "details": {"moduleName": f"mod{i}.dll"},
+        })
+    st = bridge._get_session_state(sid)
+    assert len(st["recentEvents"]) == 50, f"expected 50, got {len(st['recentEvents'])}"
+    # oldest dropped: first remaining event should be mod10
+    assert st["recentEvents"][0]["details"]["moduleName"] == "mod10.dll"
+    assert st["recentEvents"][-1]["details"]["moduleName"] == "mod59.dll"
+    _ok("T3: recentEvents ring buffer caps at 50, oldest dropped")
+
+
+def test_t3_state_get_handler_returns_snapshot():
+    """T3 — handle_state_get returns full snapshot per D2."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-H"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {
+        "address": "0x77000000", "threadId": 100,
+    })
+    resp = bridge.handle_state_get({"sessionId": sid})
+    assert resp["state"] == "paused"
+    assert resp["pauseReason"] == "system_breakpoint"
+    assert resp["terminationReason"] is None
+    assert resp["lastEvent"]["kind"] == "system_breakpoint"
+    assert "recentEvents" in resp
+    assert isinstance(resp["recentEvents"], list)
+    _ok("T3: handle_state_get returns D2 snapshot")
+
+
 def test_dispatch_lock_mutual_exclusion():
     import time
     lock = bridge._dispatch_lock
@@ -456,6 +601,14 @@ _tests = [
     test_t2_emit_debug_event_state_callbacks_emit_nothing,
     test_t2_emit_debug_event_default_fields,
     test_t2_per_session_event_isolation,
+    test_t3_state_machine_initial_state,
+    test_t3_state_machine_initdebug_to_system_breakpoint,
+    test_t3_state_machine_pause_resume_cycle,
+    test_t3_state_machine_terminates_on_exitprocess,
+    test_t3_dll_load_break_pause_reason,
+    test_t3_non_pausing_event_keeps_state,
+    test_t3_recent_events_ring_buffer_caps_at_50,
+    test_t3_state_get_handler_returns_snapshot,
     test_dispatch_lock_mutual_exclusion,
 ]
 

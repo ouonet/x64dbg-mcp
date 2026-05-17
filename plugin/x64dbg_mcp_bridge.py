@@ -180,33 +180,187 @@ _CB_TO_EVENT_KIND: Dict[int, str] = {
     CB_STEPPED: "step",
 }
 
-# Per-session event logs. T3/T4 will turn this into a ring buffer + state
-# machine; T2 stores an unbounded list so the callback wiring can be tested
-# in isolation.
+# Per-session legacy event log (kept for T2 compatibility; T3 supersedes it
+# with _session_states which contains a bounded recentEvents ring).
 _session_events: Dict[str, list] = {}
 _session_events_lock = threading.Lock()
+
+# T3 — per-session state machine (spec D2).
+# Maps session_id → state snapshot dict containing:
+#   state, pauseReason, terminationReason, lastEvent, recentEvents (ring),
+#   updatedAt.
+_session_states: Dict[str, Dict[str, Any]] = {}
+_session_states_lock = threading.Lock()
+
+# D4 — ring buffer size.
+_RECENT_EVENTS_CAP = 50
+
+# D3 — event kinds that always pause execution (no configuration toggle).
+# These default pausedExecution=True if the payload doesn't specify it.
+_ALWAYS_PAUSING_EVENT_KINDS: frozenset[str] = frozenset({
+    "breakpoint", "step", "exception", "tls_callback",
+    "system_breakpoint", "manual_pause", "trace_terminated",
+})
+
+# D3 — event kind → PauseReason when pausedExecution=True.
+_EVENT_KIND_TO_PAUSE_REASON: Dict[str, str] = {
+    "breakpoint": "breakpoint",
+    "step": "step",
+    "exception": "exception",
+    "tls_callback": "tls_callback",
+    "system_breakpoint": "system_breakpoint",
+    "manual_pause": "manual_pause",
+    "trace_terminated": "trace_terminated",
+    "dll_load": "dll_load_break",
+    "dll_unload": "dll_unload_break",
+    "thread_create": "thread_create_break",
+    "thread_exit": "thread_exit_break",
+    "output_debug_string": "output_debug_break",
+}
+
+
+def _new_session_state() -> Dict[str, Any]:
+    return {
+        "state": "loading",
+        "pauseReason": None,
+        "terminationReason": None,
+        "lastEvent": None,
+        "recentEvents": [],
+        "updatedAt": int(time.time() * 1000),
+    }
+
+
+def _get_session_state(session_id: str) -> Dict[str, Any]:
+    """Return (creating if absent) the per-session state snapshot."""
+    with _session_states_lock:
+        st = _session_states.get(session_id)
+        if st is None:
+            st = _new_session_state()
+            _session_states[session_id] = st
+        return st
+
+
+def _append_recent_event(st: Dict[str, Any], event: dict) -> None:
+    """Append a DebugEvent to the ring buffer, dropping oldest beyond 50."""
+    buf = st["recentEvents"]
+    buf.append(event)
+    if len(buf) > _RECENT_EVENTS_CAP:
+        # Trim from the front; chronological order preserved.
+        del buf[: len(buf) - _RECENT_EVENTS_CAP]
 
 
 def _emit_debug_event(session_id: str, cb_type: int, payload: dict):
     """
-    Convert an x64dbg callback into a DebugEvent (D3) and append it to the
-    named session's event log. Returns the constructed event dict, or None
-    when the callback has no event mapping (state-machine internal cb types).
+    T2 — convert an x64dbg callback into a DebugEvent (D3) and append it to
+    the named session's event log. Returns the constructed event dict, or
+    None when the callback has no event mapping.
+
+    T3 — also appends to the per-session state's recentEvents ring (D2/D4).
     """
     kind = _CB_TO_EVENT_KIND.get(cb_type)
     if kind is None:
         return None
+    # Default pausedExecution: True for kinds that always pause; False
+    # otherwise. Explicit payload value always wins.
+    default_paused = kind in _ALWAYS_PAUSING_EVENT_KINDS
+    paused = bool(payload.get("pausedExecution", default_paused))
     event = {
         "kind": kind,
         "timestamp": int(time.time() * 1000),
         "address": payload.get("address"),
         "threadId": payload.get("threadId"),
-        "pausedExecution": bool(payload.get("pausedExecution", False)),
+        "pausedExecution": paused,
         "details": dict(payload.get("details", {})),
     }
     with _session_events_lock:
         _session_events.setdefault(session_id, []).append(event)
+    # T3: also feed the state machine's ring buffer.
+    st = _get_session_state(session_id)
+    with _session_states_lock:
+        _append_recent_event(st, event)
+        st["lastEvent"] = event
+        st["updatedAt"] = event["timestamp"]
     return event
+
+
+def _handle_callback(session_id: str, cb_type: int, payload: dict) -> dict | None:
+    """
+    T3 — high-level x64dbg callback dispatcher: drives both the event log
+    (via _emit_debug_event) and the per-session state machine.
+
+    Returns the emitted DebugEvent (or None for state-only callbacks).
+    """
+    # Always ensure the session-state record exists so initial-state queries
+    # work even before any user-visible event fires.
+    _get_session_state(session_id)
+
+    # Emit the DebugEvent (if this cb has a user-visible mapping).
+    event = _emit_debug_event(session_id, cb_type, payload)
+
+    # State-machine transitions (D2).
+    st = _get_session_state(session_id)
+    with _session_states_lock:
+        if cb_type == CB_INITDEBUG:
+            st["state"] = "loading"
+            st["pauseReason"] = None
+            st["terminationReason"] = None
+        elif cb_type == CB_RESUMEDEBUG:
+            st["state"] = "running"
+            st["pauseReason"] = None
+        elif cb_type == CB_PAUSEDEBUG:
+            # User-issued pause (F12 / script / plugin). The actual cause
+            # is reported via subsequent CB_BREAKPOINT/STEPPED/EXCEPTION, so
+            # we only set manual_pause if nothing else has set pauseReason
+            # in this transition.
+            if st["state"] != "paused":
+                st["state"] = "paused"
+                st["pauseReason"] = "manual_pause"
+        elif cb_type == CB_STOPDEBUG:
+            # StopDebug typically follows CB_EXITPROCESS. If we haven't seen
+            # an exit yet, treat as process_exit.
+            if st["state"] != "terminated":
+                st["state"] = "terminated"
+                if st["terminationReason"] is None:
+                    st["terminationReason"] = "process_exit"
+                st["pauseReason"] = None
+        elif event is not None:
+            # Event-driven transitions.
+            if event["kind"] == "process_exit":
+                st["state"] = "terminated"
+                st["terminationReason"] = "process_exit"
+                st["pauseReason"] = None
+            elif event["kind"] == "detached":
+                st["state"] = "terminated"
+                st["terminationReason"] = "detached"
+                st["pauseReason"] = None
+            elif event["pausedExecution"]:
+                st["state"] = "paused"
+                reason = _EVENT_KIND_TO_PAUSE_REASON.get(event["kind"], "unknown")
+                st["pauseReason"] = reason
+                st["terminationReason"] = None
+        st["updatedAt"] = int(time.time() * 1000)
+
+    return event
+
+
+def handle_state_get(req: dict) -> dict:
+    """T3 — D2 state snapshot bridge handler."""
+    session_id = req.get("sessionId", "")
+    st = _get_session_state(session_id)
+    with _session_states_lock:
+        # Return a shallow copy so callers can't mutate our internal state.
+        return {
+            "sessionId": session_id,
+            "state": st["state"],
+            "pauseReason": st["pauseReason"],
+            "terminationReason": st["terminationReason"],
+            "lastEvent": st["lastEvent"],
+            "recentEvents": list(st["recentEvents"]),
+            "updatedAt": st["updatedAt"],
+        }
+
+
+_handlers["state.get"] = handle_state_get
 
 
 def handler(method: str):

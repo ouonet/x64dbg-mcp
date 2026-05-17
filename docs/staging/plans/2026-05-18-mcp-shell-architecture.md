@@ -20,7 +20,7 @@ Each task is ≤ 60 min, leaves the repo green, and references a spec decision (
   acceptance: `python plugin/tests/test_bridge.py` includes a new offline test that synthesizes each callback and asserts a `DebugEvent` shape is recorded.
   spec:       D3 (source callbacks), D4 (ring buffer)
 
-- [ ] T3: Bridge — state machine + event ring buffer (50 entries)
+- [x] T3: Bridge — state machine + event ring buffer (50 entries)
   goal:       Drive `state` / `pauseReason` / `terminationReason` from callbacks; maintain a 50-entry ring buffer; expose snapshot via a new `state.get` bridge request.
   files:      `plugin/x64dbg_mcp_bridge.py`
   acceptance: Offline test feeds a synthetic event sequence (system_bp → run → bp → run → exit) and asserts state transitions, `lastEvent`, and `recentEvents.length === 50` after overflow.
