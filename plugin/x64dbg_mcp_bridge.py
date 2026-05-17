@@ -143,6 +143,27 @@ _LOCKLESS_HANDLERS: frozenset[str] = frozenset({
 # T5 — bridge protocol version (D10).
 BRIDGE_PROTOCOL_VERSION = "2"
 
+# T6 — unsolicited push channel (D11).
+# List of socket-like objects (must have sendall(bytes)).
+# BridgeServer._handle_client registers/unregisters connections here.
+_push_clients: list = []
+_push_clients_lock = threading.Lock()
+
+
+def _push_frame(frame: dict) -> None:
+    """Send an unsolicited push frame to all connected clients (D11).
+    Dead clients (sendall raises) are removed and never block live ones."""
+    data = (json.dumps(frame) + "\n").encode("utf-8")
+    with _push_clients_lock:
+        dead = []
+        for sock in _push_clients:
+            try:
+                sock.sendall(data)
+            except Exception:
+                dead.append(sock)
+        for sock in dead:
+            _push_clients.remove(sock)
+
 
 def _check_protocol_version(req: dict) -> Optional[str]:
     """Return 'E_PROTOCOL_VERSION' if req carries a mismatched protocolVersion;
@@ -331,6 +352,7 @@ def _handle_callback(session_id: str, cb_type: int, payload: dict) -> dict | Non
 
     # State-machine transitions (D2).
     st = _get_session_state(session_id)
+    state_changed = False
     with _session_states_lock:
         # T4 — exception/dll BP coalescing (D3 rules 7 & 8).
         # x64dbg fires CB_EXCEPTION then CB_BREAKPOINT for exception BPs, and
@@ -352,6 +374,7 @@ def _handle_callback(session_id: str, cb_type: int, payload: dict) -> dict | Non
                                 and prev["details"].get("moduleName") == mod):
                             ring.pop(i)
                             break
+        prev_state = st["state"]
         if cb_type == CB_INITDEBUG:
             st["state"] = "loading"
             st["pauseReason"] = None
@@ -390,7 +413,20 @@ def _handle_callback(session_id: str, cb_type: int, payload: dict) -> dict | Non
                 reason = _EVENT_KIND_TO_PAUSE_REASON.get(event["kind"], "unknown")
                 st["pauseReason"] = reason
                 st["terminationReason"] = None
+        state_changed = st["state"] != prev_state
         st["updatedAt"] = int(time.time() * 1000)
+        # Snapshot for push (copy inside lock to avoid race).
+        push_state = {
+            "state": st["state"],
+            "pauseReason": st["pauseReason"],
+            "terminationReason": st["terminationReason"],
+        }
+
+    # T6 — push unsolicited frames to connected clients (D11).
+    if event is not None:
+        _push_frame({"type": "debugEvent", "event": event})
+    if state_changed:
+        _push_frame({"type": "stateChange", "state": push_state})
 
     return event
 
@@ -2777,6 +2813,9 @@ class BridgeServer:
                 break
 
     def _handle_client(self, client: socket.socket) -> None:
+        # T6 — register this connection as a push target.
+        with _push_clients_lock:
+            _push_clients.append(client)
         buffer = ""
         try:
             while self.running:
@@ -2804,6 +2843,10 @@ class BridgeServer:
                 pass
         finally:
             client.close()
+            # T6 — unregister push target.
+            with _push_clients_lock:
+                if client in _push_clients:
+                    _push_clients.remove(client)
             log_info("Client disconnected")
 
     def _dispatch(self, raw: str) -> dict:

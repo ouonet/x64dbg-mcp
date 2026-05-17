@@ -690,6 +690,115 @@ def test_t4_bpkind_user_when_payload_specifies():
     _ok("T4: explicit bpKind=user preserved")
 
 
+def test_t6_push_channel_emits_debug_event_frames():
+    """T6 D11 — 3 event-producing callbacks emit 3 debugEvent frames; no 'id' field."""
+    import json as _json
+
+    frames = []
+
+    class _FakeSock:
+        def sendall(self, data):
+            for line in data.decode("utf-8").split("\n"):
+                line = line.strip()
+                if line:
+                    frames.append(_json.loads(line))
+
+    sock = _FakeSock()
+    bridge._push_clients.append(sock)
+    try:
+        bridge._session_states.clear()
+        bridge._session_events.clear()
+        sid = "push-sess-1"
+        bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+        bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+        bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+        frames.clear()  # reset; only count the 3 targeted events below
+
+        bridge._handle_callback(sid, bridge.CB_LOADDLL, {"details": {"moduleName": "a.dll"}})
+        bridge._handle_callback(sid, bridge.CB_LOADDLL, {"details": {"moduleName": "b.dll"}})
+        bridge._handle_callback(sid, bridge.CB_LOADDLL, {"details": {"moduleName": "c.dll"}})
+
+        debug_frames = [f for f in frames if f.get("type") == "debugEvent"]
+        assert len(debug_frames) == 3, f"expected 3 debugEvent frames, got {len(debug_frames)}"
+        for f in frames:
+            assert "id" not in f, f"frame must not have 'id': {f}"
+    finally:
+        if sock in bridge._push_clients:
+            bridge._push_clients.remove(sock)
+    _ok("T6: 3 callbacks → 3 debugEvent push frames; no 'id' field")
+
+
+def test_t6_push_channel_emits_state_change_frames():
+    """T6 D11 — pausing callbacks emit stateChange frames."""
+    import json as _json
+
+    frames = []
+
+    class _FakeSock:
+        def sendall(self, data):
+            for line in data.decode("utf-8").split("\n"):
+                line = line.strip()
+                if line:
+                    frames.append(_json.loads(line))
+
+    sock = _FakeSock()
+    bridge._push_clients.append(sock)
+    try:
+        bridge._session_states.clear()
+        bridge._session_events.clear()
+        sid = "push-sess-2"
+        bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+        bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})  # loading→paused
+        bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})       # paused→running
+        bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+            "address": "0x401000",
+            "details": {"bpType": "sw"},
+        })  # running→paused
+
+        sc_frames = [f for f in frames if f.get("type") == "stateChange"]
+        assert len(sc_frames) >= 3, f"expected >=3 stateChange frames, got {len(sc_frames)}"
+        for f in frames:
+            assert "id" not in f, f"stateChange frame must not have 'id': {f}"
+        # Each stateChange must contain a 'state' payload
+        for f in sc_frames:
+            assert "state" in f, f"stateChange missing 'state' field: {f}"
+            assert "state" in f["state"], f"state payload missing 'state': {f}"
+    finally:
+        if sock in bridge._push_clients:
+            bridge._push_clients.remove(sock)
+    _ok("T6: state transitions emit stateChange push frames")
+
+
+def test_t6_push_frame_isolates_dead_clients():
+    """T6 — dead clients (sendall raises) are removed and don't block live ones."""
+    import json as _json
+
+    live_frames = []
+
+    class _LiveSock:
+        def sendall(self, data):
+            for line in data.decode("utf-8").split("\n"):
+                if line.strip():
+                    live_frames.append(_json.loads(line.strip()))
+
+    class _DeadSock:
+        def sendall(self, data):
+            raise OSError("connection reset")
+
+    dead = _DeadSock()
+    live = _LiveSock()
+    bridge._push_clients.extend([dead, live])
+    try:
+        bridge._push_frame({"type": "debugEvent", "event": {"kind": "test"}})
+        assert len(live_frames) == 1
+        assert dead not in bridge._push_clients, "dead client not removed"
+    finally:
+        for s in (dead, live):
+            if s in bridge._push_clients:
+                bridge._push_clients.remove(s)
+    _ok("T6: dead push client removed, live client still receives frame")
+
+
 def test_t5_protocol_version_constant():
     """T5 — BRIDGE_PROTOCOL_VERSION must be '2'."""
     assert bridge.BRIDGE_PROTOCOL_VERSION == "2"
@@ -795,6 +904,9 @@ _tests = [
     test_t4_hardcoded_int3_remains_as_exception,
     test_t4_bpkind_temporary_for_temp_breakpoint,
     test_t4_bpkind_user_when_payload_specifies,
+    test_t6_push_channel_emits_debug_event_frames,
+    test_t6_push_channel_emits_state_change_frames,
+    test_t6_push_frame_isolates_dead_clients,
     test_t5_protocol_version_constant,
     test_t5_protocol_probe_returns_shape,
     test_t5_check_protocol_version_rejects_v1,
