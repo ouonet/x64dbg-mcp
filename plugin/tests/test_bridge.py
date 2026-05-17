@@ -554,6 +554,142 @@ def test_t3_state_get_handler_returns_snapshot():
     _ok("T3: handle_state_get returns D2 snapshot")
 
 
+def test_t4_exception_bp_coalesces_into_single_breakpoint_event():
+    """T4 rule 7 — CB_EXCEPTION followed by CB_BREAKPOINT(bpType=exception)
+    at the same address emits exactly ONE breakpoint event (the exception
+    event is suppressed / replaced)."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x1"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    # x64dbg fires CB_EXCEPTION then CB_BREAKPOINT for an exception BP
+    bridge._handle_callback(sid, bridge.CB_EXCEPTION, {
+        "address": "0x402000", "threadId": 100,
+        "details": {"exceptionCode": "0xC0000005", "exceptionName": "ACCESS_VIOLATION"},
+    })
+    bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+        "address": "0x402000", "threadId": 100,
+        "details": {"bpType": "exception", "bpKind": "user",
+                    "exceptionCode": "0xC0000005",
+                    "exceptionName": "ACCESS_VIOLATION"},
+    })
+    st = bridge._get_session_state(sid)
+    # Coalesced: exactly one event for this trapping point
+    bp_or_exc = [e for e in st["recentEvents"]
+                 if e["kind"] in ("breakpoint", "exception")
+                 and e["address"] == "0x402000"]
+    assert len(bp_or_exc) == 1, f"expected 1 coalesced event, got {len(bp_or_exc)}"
+    assert bp_or_exc[0]["kind"] == "breakpoint"
+    assert bp_or_exc[0]["details"]["bpType"] == "exception"
+    # exception context preserved
+    assert bp_or_exc[0]["details"]["exceptionName"] == "ACCESS_VIOLATION"
+    _ok("T4 rule 7: exception BP coalesces exception+breakpoint events")
+
+
+def test_t4_dll_bp_coalesces_into_single_breakpoint_event():
+    """T4 rule 8 — CB_LOADDLL followed by CB_BREAKPOINT(bpType=dll) for the
+    same module emits exactly ONE breakpoint event."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x2"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_LOADDLL, {
+        "details": {"moduleName": "user32.dll", "moduleBase": "0x70000000"},
+    })
+    bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+        "address": "0x70001000",
+        "details": {"bpType": "dll", "bpKind": "user",
+                    "moduleName": "user32.dll"},
+    })
+    st = bridge._get_session_state(sid)
+    matched = [e for e in st["recentEvents"]
+               if (e["kind"] == "breakpoint" and e["details"].get("bpType") == "dll")
+               or (e["kind"] == "dll_load" and e["details"].get("moduleName") == "user32.dll")]
+    assert len(matched) == 1, f"expected 1 coalesced event, got {len(matched)}"
+    assert matched[0]["kind"] == "breakpoint"
+    assert matched[0]["details"]["bpType"] == "dll"
+    _ok("T4 rule 8: DLL BP coalesces dll_load+breakpoint events")
+
+
+def test_t4_unmatched_dll_load_still_emits_event():
+    """T4 — DLL loads without a matching bpdll fire normal dll_load events."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x3"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_LOADDLL, {
+        "details": {"moduleName": "kernel32.dll"},
+    })
+    st = bridge._get_session_state(sid)
+    dll_events = [e for e in st["recentEvents"] if e["kind"] == "dll_load"]
+    assert len(dll_events) == 1
+    _ok("T4: unmatched DLL load still emits dll_load event")
+
+
+def test_t4_hardcoded_int3_remains_as_exception():
+    """T4 rule 1 — CB_EXCEPTION(EXCEPTION_BREAKPOINT) with no matching BP
+    coalesce target stays as an `exception` event."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x4"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_EXCEPTION, {
+        "address": "0x401234",
+        "details": {"exceptionCode": "0x80000003",
+                    "exceptionName": "EXCEPTION_BREAKPOINT"},
+    })
+    # No CB_BREAKPOINT follows — it's a hardcoded int 3.
+    st = bridge._get_session_state(sid)
+    exc_events = [e for e in st["recentEvents"] if e["kind"] == "exception"]
+    assert len(exc_events) == 1
+    assert exc_events[0]["details"]["exceptionName"] == "EXCEPTION_BREAKPOINT"
+    assert st["state"] == "paused"
+    assert st["pauseReason"] == "exception"
+    _ok("T4 rule 1: hardcoded int 3 stays as exception, not breakpoint")
+
+
+def test_t4_bpkind_temporary_for_temp_breakpoint():
+    """T4 rule 4 — CB_BREAKPOINT with bpName starting `$temp_` reports bpKind=temporary."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x5"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+        "address": "0x401000",
+        "details": {"bpType": "sw", "bpName": "$temp_run_to_address"},
+    })
+    st = bridge._get_session_state(sid)
+    bp = st["lastEvent"]
+    assert bp["kind"] == "breakpoint"
+    assert bp["details"]["bpKind"] == "temporary"
+    _ok("T4 rule 4: $temp_* BP name → bpKind=temporary")
+
+
+def test_t4_bpkind_user_when_payload_specifies():
+    """T4 — explicit bpKind=user in payload is preserved."""
+    bridge._session_states.clear()
+    bridge._session_events.clear()
+    sid = "sess-x6"
+    bridge._handle_callback(sid, bridge.CB_INITDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_SYSTEMBREAKPOINT, {})
+    bridge._handle_callback(sid, bridge.CB_RESUMEDEBUG, {})
+    bridge._handle_callback(sid, bridge.CB_BREAKPOINT, {
+        "address": "0x401000",
+        "details": {"bpType": "sw", "bpKind": "user", "bpName": "myBP"},
+    })
+    st = bridge._get_session_state(sid)
+    assert st["lastEvent"]["details"]["bpKind"] == "user"
+    _ok("T4: explicit bpKind=user preserved")
+
+
 def test_dispatch_lock_mutual_exclusion():
     import time
     lock = bridge._dispatch_lock
@@ -609,6 +745,12 @@ _tests = [
     test_t3_non_pausing_event_keeps_state,
     test_t3_recent_events_ring_buffer_caps_at_50,
     test_t3_state_get_handler_returns_snapshot,
+    test_t4_exception_bp_coalesces_into_single_breakpoint_event,
+    test_t4_dll_bp_coalesces_into_single_breakpoint_event,
+    test_t4_unmatched_dll_load_still_emits_event,
+    test_t4_hardcoded_int3_remains_as_exception,
+    test_t4_bpkind_temporary_for_temp_breakpoint,
+    test_t4_bpkind_user_when_payload_specifies,
     test_dispatch_lock_mutual_exclusion,
 ]
 

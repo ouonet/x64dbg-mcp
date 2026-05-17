@@ -297,9 +297,36 @@ def _handle_callback(session_id: str, cb_type: int, payload: dict) -> dict | Non
     # Emit the DebugEvent (if this cb has a user-visible mapping).
     event = _emit_debug_event(session_id, cb_type, payload)
 
+    # T4 — bpKind classification (D3 rule 4): derive from bpName if not explicit.
+    if cb_type == CB_BREAKPOINT and event is not None:
+        details = event["details"]
+        if "bpKind" not in details:
+            bp_name = str(details.get("bpName", ""))
+            details["bpKind"] = "temporary" if bp_name.startswith("$temp_") else "user"
+
     # State-machine transitions (D2).
     st = _get_session_state(session_id)
     with _session_states_lock:
+        # T4 — exception/dll BP coalescing (D3 rules 7 & 8).
+        # x64dbg fires CB_EXCEPTION then CB_BREAKPOINT for exception BPs, and
+        # CB_LOADDLL then CB_BREAKPOINT for DLL-load BPs. Merge into one event.
+        if cb_type == CB_BREAKPOINT and event is not None:
+            bp_type = event["details"].get("bpType", "")
+            if bp_type in ("exception", "dll"):
+                ring = st["recentEvents"]
+                for i in range(len(ring) - 2, -1, -1):
+                    prev = ring[i]
+                    if bp_type == "exception":
+                        if (prev["kind"] == "exception"
+                                and prev["address"] == event["address"]):
+                            ring.pop(i)
+                            break
+                    else:  # dll
+                        mod = event["details"].get("moduleName")
+                        if (prev["kind"] == "dll_load"
+                                and prev["details"].get("moduleName") == mod):
+                            ring.pop(i)
+                            break
         if cb_type == CB_INITDEBUG:
             st["state"] = "loading"
             st["pauseReason"] = None
