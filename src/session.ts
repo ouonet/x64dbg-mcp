@@ -200,6 +200,7 @@ export class SessionManager {
     s.recentEvents.push(event);
     if (s.recentEvents.length > 50) s.recentEvents.shift();
     s.lastActivity = Date.now();
+    notificationBus.emit("debugEvent", id, event);
   }
 
   applyStateChange(id: string, bridgeState: {
@@ -214,6 +215,7 @@ export class SessionManager {
     s.terminationReason = bridgeState.terminationReason;
     s.lastActivity = Date.now();
     this.stateCVs.get(id)?.signal();
+    notificationBus.emit("stateChange", id, bridgeState);
   }
 
   wireClient(id: string, client: EventEmitter): void {
@@ -326,3 +328,6 @@ export class SessionManager {
 
 /** Singleton session manager */
 export const sessions = new SessionManager();
+
+/** D7 — cross-cutting bus for MCP notification wiring; emits ("debugEvent", sessionId, event) and ("stateChange", sessionId, state). */
+export const notificationBus = new EventEmitter();
