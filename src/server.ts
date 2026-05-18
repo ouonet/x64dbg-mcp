@@ -68,6 +68,7 @@ const { config } = await import("./config.js");
 const { createMcpServer } = await import("./mcpServer.js");
 const { startHttpMcpServer } = await import("./httpServer.js");
 const { killAllDebuggers } = await import("./launcher.js");
+const { startHealthCheck, stopHealthCheck } = await import("./healthCheck.js");
 
 const runtimeTransport = cliOverrides.transport ?? config.mcpTransport;
 const runtimeHttpHost = cliOverrides.host ?? config.mcpHttpHost;
@@ -82,6 +83,7 @@ async function main(): Promise<void> {
 
   // No global bridge connect: each session creates its own bridge on demand.
   sessions.start();
+  startHealthCheck();
 
   let closeTransport = async (): Promise<void> => {};
 
@@ -106,6 +108,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     logger.info("Shutting down …");
+    stopHealthCheck();
     await closeTransport();
 
     // Drain and tear down each session in parallel.
