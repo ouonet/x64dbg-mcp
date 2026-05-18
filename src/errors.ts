@@ -37,6 +37,8 @@ export const ErrorCode = {
   E_SESSION_TERMINATED: "E_SESSION_TERMINATED",
   /** File I/O failed in save_memory_dump / create_minidump (added in v1.2.0). */
   E_IO_FAILED: "E_IO_FAILED",
+  /** A supplied argument is invalid (path, size, etc.) (added in v1.2.0). */
+  E_INVALID_ARGUMENT: "E_INVALID_ARGUMENT",
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

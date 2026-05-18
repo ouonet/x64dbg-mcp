@@ -1679,6 +1679,165 @@ describe("T16: wait_for_state tool (D6)", async () => {
   });
 });
 
+// ─── T17: save_memory_dump + create_minidump (D8) ───────────────────────────
+
+describe("T17: save_memory_dump + create_minidump (D8)", async () => {
+  const { createMcpServer: createMcpServer17 } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions17 } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+  const { bridges: realBridges17 } = await importFresh<typeof import("../src/bridgeRegistry.js")>("src/bridgeRegistry.ts");
+  const { BridgeClient: BC17 } = await importFresh<{ BridgeClient: typeof import("../src/bridge.js").BridgeClient }>("src/bridge.ts");
+
+  interface McpInternals17 {
+    _registeredTools: Record<string, {
+      handler: (args: Record<string, unknown>, extra: Record<string, unknown>) =>
+        Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }>;
+  }
+
+  async function callToolDirect17(
+    server: ReturnType<typeof createMcpServer17>,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ text: string; isError?: boolean }> {
+    const tools = (server as unknown as McpInternals17)._registeredTools;
+    const tool = tools[name];
+    if (!tool) throw new Error(`Tool not registered: ${name}`);
+    const res = await tool.handler(args, {});
+    return { text: res.content[0]?.text ?? "", isError: res.isError };
+  }
+
+  function forceDelete17(sessionId: string): void {
+    const s = realSessions17 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+    const b = realBridges17 as unknown as Record<string, Map<string, unknown>>;
+    b["clients"]?.delete(sessionId);
+  }
+
+  test("T17: save_memory_dump rejects relative path", async () => {
+    const sess = realSessions17.createLoading("t17_a.exe", "x64", 20020);
+    realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer17();
+    try {
+      const result = await callToolDirect17(server, "save_memory_dump", {
+        sessionId: sess.id, address: "0x401000", size: 256,
+        outputPath: "relative/path.dmp",
+      });
+      assert.ok(result.isError, "relative path must be rejected");
+      assert.ok(result.text.includes("absolute"), `error must mention 'absolute', got: ${result.text}`);
+    } finally {
+      forceDelete17(sess.id);
+    }
+  });
+
+  test("T17: save_memory_dump rejects path pointing to existing directory", async () => {
+    const sess = realSessions17.createLoading("t17_b.exe", "x64", 20021);
+    realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer17();
+    try {
+      const result = await callToolDirect17(server, "save_memory_dump", {
+        sessionId: sess.id, address: "0x401000", size: 256,
+        outputPath: "C:\\Windows",  // existing directory
+      });
+      assert.ok(result.isError, "existing directory path must be rejected");
+      assert.ok(result.text.includes("directory") || result.text.includes("file"), `error must mention path issue, got: ${result.text}`);
+    } finally {
+      forceDelete17(sess.id);
+    }
+  });
+
+  test("T17: save_memory_dump rejects parent directory that does not exist", async () => {
+    const sess = realSessions17.createLoading("t17_c.exe", "x64", 20022);
+    realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer17();
+    try {
+      const result = await callToolDirect17(server, "save_memory_dump", {
+        sessionId: sess.id, address: "0x401000", size: 256,
+        outputPath: "C:\\nonexistent_t17_parent_dir\\test.dmp",
+      });
+      assert.ok(result.isError, "missing parent directory must be rejected");
+      assert.ok(result.text.includes("parent") || result.text.includes("directory"), `error must mention directory, got: ${result.text}`);
+    } finally {
+      forceDelete17(sess.id);
+    }
+  });
+
+  test("T17: save_memory_dump rejects size > 256 MB", async () => {
+    const sess = realSessions17.createLoading("t17_d.exe", "x64", 20023);
+    realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer17();
+    try {
+      const result = await callToolDirect17(server, "save_memory_dump", {
+        sessionId: sess.id, address: "0x401000",
+        size: 256 * 1024 * 1024 + 1,
+        outputPath: "C:\\Windows\\Temp\\test.dmp",
+      });
+      assert.ok(result.isError, "size > 256 MB must be rejected");
+      assert.ok(result.text.includes("256"), `error must mention 256, got: ${result.text}`);
+    } finally {
+      forceDelete17(sess.id);
+    }
+  });
+
+  test("T17: save_memory_dump with valid path returns { savedTo, bytesWritten }", async () => {
+    const net17 = await import("node:net");
+    const bridgeSrv = net17.createServer((sock) => {
+      sock.on("error", () => { /* ignore */ });
+      let buf = "";
+      sock.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const req = JSON.parse(line) as Record<string, unknown>;
+            if (req["method"] === "protocol.probe") {
+              try { sock.write(JSON.stringify({ id: req["id"], success: true, data: { protocolVersion: "2", capabilities: [] } }) + "\n"); } catch { /* ignore */ }
+            } else if (req["method"] === "memory.saveDump") {
+              try { sock.write(JSON.stringify({ id: req["id"], success: true, data: { bytesWritten: 64 } }) + "\n"); } catch { /* ignore */ }
+            } else {
+              try { sock.write(JSON.stringify({ id: req["id"], success: false, error: "unsupported" }) + "\n"); } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+        }
+      });
+    });
+    const bridgePort17 = await new Promise<number>((resolve) => {
+      bridgeSrv.listen(0, "127.0.0.1", () => {
+        const addr = bridgeSrv.address() as import("node:net").AddressInfo;
+        resolve(addr.port);
+      });
+    });
+    const bc17 = new BC17("127.0.0.1", bridgePort17);
+    await bc17.connect();
+
+    const sess = realSessions17.createLoading("t17_e.exe", "x64", bridgePort17);
+    realBridges17.set(sess.id, bc17);
+    realSessions17.wireClient(sess.id, bc17);
+    realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+
+    const server = createMcpServer17();
+    try {
+      const result = await callToolDirect17(server, "save_memory_dump", {
+        sessionId: sess.id,
+        address: "0x401000",
+        size: 64,
+        outputPath: "C:\\Windows\\Temp\\t17_test.dmp",
+      });
+      assert.ok(!result.isError, `must succeed: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.ok("savedTo" in data, "response must have savedTo");
+      assert.equal(data["bytesWritten"], 64);
+      assert.ok(typeof data["savedTo"] === "string" && (data["savedTo"] as string).length > 0);
+    } finally {
+      forceDelete17(sess.id);
+      try { await bc17.disconnect(); } catch { /* ignore */ }
+      await new Promise<void>((r) => bridgeSrv.close(() => r()));
+    }
+  });
+});
+
 // ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
 
 describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {

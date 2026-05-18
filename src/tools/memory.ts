@@ -2,12 +2,50 @@
  * Memory and register inspection tools
  */
 
+import path from "path";
+import fs from "fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { bridgeFor } from "../bridgeRegistry.js";
 import { sessions } from "../session.js";
 import { config } from "../config.js";
 import type { StackFrame, ThreadInfo, MemoryRegion } from "../types.js";
+
+const MAX_DUMP_SIZE = 256 * 1024 * 1024; // 256 MB
+
+/** D8 — validate outputPath: absolute, parent exists, not a directory, no trailing sep. */
+function validateOutputPath(outputPath: string): string | null {
+  // Must be absolute
+  if (!path.isAbsolute(outputPath)) {
+    return `outputPath must be an absolute path, got: ${outputPath}`;
+  }
+  // No trailing separator
+  const normalized = path.normalize(outputPath);
+  const lastChar = outputPath[outputPath.length - 1];
+  if (lastChar === "/" || lastChar === "\\") {
+    return `outputPath must not end with a path separator: ${outputPath}`;
+  }
+  // Must not point to an existing directory
+  try {
+    const stat = fs.statSync(normalized);
+    if (stat.isDirectory()) {
+      return `outputPath resolves to an existing directory: ${normalized}`;
+    }
+  } catch {
+    // File does not exist yet — that's fine; check parent below
+  }
+  // Parent directory must exist
+  const parent = path.dirname(normalized);
+  try {
+    const parentStat = fs.statSync(parent);
+    if (!parentStat.isDirectory()) {
+      return `Parent path is not a directory: ${parent}`;
+    }
+  } catch {
+    return `Parent directory does not exist: ${parent}`;
+  }
+  return null; // valid
+}
 
 export function registerMemoryTools(server: McpServer): void {
   // ── Read memory ───────────────────────────────────────────────────────
@@ -301,6 +339,106 @@ export function registerMemoryTools(server: McpServer): void {
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Save memory dump ──────────────────────────────────────────────────
+
+  server.tool(
+    "save_memory_dump",
+    "Save a raw memory region from the debuggee to a file. " +
+      "outputPath must be absolute, parent must exist, must not point to a directory. " +
+      "File is overwritten silently if it already exists. Size cap: 256 MB. " +
+      "Returns { savedTo, bytesWritten }.",
+    {
+      sessionId: z.string().describe("Session ID"),
+      address: z.string().describe("Start address (hex or symbol, e.g. '0x401000', 'rip')"),
+      size: z
+        .number().int().min(1)
+        .describe("Number of bytes to dump (max 256 MB)"),
+      outputPath: z
+        .string()
+        .describe("Absolute path for the output file (parent must exist)"),
+    },
+    async ({ sessionId, address, size, outputPath }) => {
+      try {
+        sessions.get(sessionId);
+
+        if (size > MAX_DUMP_SIZE) {
+          return {
+            content: [{ type: "text" as const, text: `Error: size ${size} exceeds 256 MB cap` }],
+            isError: true,
+          };
+        }
+
+        const pathErr = validateOutputPath(outputPath);
+        if (pathErr) {
+          return { content: [{ type: "text" as const, text: `Error: ${pathErr}` }], isError: true };
+        }
+
+        const result = await bridgeFor(sessionId).call<{ bytesWritten: number }>(
+          "memory.saveDump", { sessionId, address, size, outputPath }
+        );
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              savedTo: path.resolve(outputPath),
+              bytesWritten: result.bytesWritten,
+            }, null, 2),
+          }],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Create minidump ───────────────────────────────────────────────────
+
+  server.tool(
+    "create_minidump",
+    "Create a Windows minidump of the debuggee process. " +
+      "outputPath must be absolute, parent must exist, must not point to a directory. " +
+      "dumpType 'normal' includes threads/modules/stack; 'full' includes all process memory. " +
+      "Returns { savedTo, fileSize }.",
+    {
+      sessionId: z.string().describe("Session ID"),
+      outputPath: z
+        .string()
+        .describe("Absolute path for the .dmp output file (parent must exist)"),
+      dumpType: z
+        .enum(["normal", "full"]).optional().default("normal")
+        .describe("'normal' = small (threads+modules+stack); 'full' = entire process memory"),
+    },
+    async ({ sessionId, outputPath, dumpType }) => {
+      try {
+        sessions.get(sessionId);
+
+        const pathErr = validateOutputPath(outputPath);
+        if (pathErr) {
+          return { content: [{ type: "text" as const, text: `Error: ${pathErr}` }], isError: true };
+        }
+
+        const result = await bridgeFor(sessionId).call<{ fileSize: number }>(
+          "debug.minidump", { sessionId, outputPath, dumpType }
+        );
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              savedTo: path.resolve(outputPath),
+              fileSize: result.fileSize,
+            }, null, 2),
+          }],
         };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
