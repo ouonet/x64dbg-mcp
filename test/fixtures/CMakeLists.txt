@@ -8,3 +8,7 @@ target_link_libraries(http_server PRIVATE ws2_32)
 
 add_executable(http_client http_client.c)
 target_link_libraries(http_client PRIVATE ws2_32)
+
+add_executable(int3 int3.c)
+
+add_executable(exception_bp exception_bp.c)
