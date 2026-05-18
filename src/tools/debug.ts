@@ -197,17 +197,23 @@ export function registerDebugTools(server: McpServer): void {
 
         if (outcome.timedOut) {
           const s = sessions.peek(session.id);
+          const diagnostic = {
+            timedOut: true,
+            sessionId: session.id,
+            state: s.state,
+            pauseReason: s.pauseReason,
+            terminationReason: s.terminationReason,
+            recentEvents: [...s.recentEvents],
+            note: s.state === "loading"
+              ? "Debuggee did not pause within 60s. Possible causes: (1) executable is heavily packed/obfuscated " +
+                "(prevent debugger from pausing); (2) anti-debug detection failed to bypass; (3) bridge plugin failed to initialize. " +
+                "Check recentEvents for DLL loads/exceptions. Use wait_for_state to continue waiting, or terminate_session to clean up."
+              : `Debuggee transitioned to ${s.state} but bridge response timed out (network issue?).`,
+          };
           return {
             content: [{
               type: "text" as const,
-              text: JSON.stringify({
-                timedOut: true,
-                sessionId: session.id,
-                state: s.state,
-                pauseReason: s.pauseReason,
-                terminationReason: s.terminationReason,
-                recentEvents: [...s.recentEvents],
-              }, null, 2),
+              text: JSON.stringify(diagnostic, null, 2),
             }],
           };
         }
@@ -347,17 +353,22 @@ export function registerDebugTools(server: McpServer): void {
 
         if (outcome.timedOut) {
           const s = sessions.peek(session.id);
+          const diagnostic = {
+            timedOut: true,
+            sessionId: session.id,
+            state: s.state,
+            pauseReason: s.pauseReason,
+            terminationReason: s.terminationReason,
+            recentEvents: [...s.recentEvents],
+            note: s.state === "loading"
+              ? "Attached process did not pause within 60s. Check recentEvents for DLL loads/exceptions. " +
+                "Use wait_for_state to continue waiting, or terminate_session to clean up."
+              : `Process transitioned to ${s.state} but bridge response timed out (network issue?).`,
+          };
           return {
             content: [{
               type: "text" as const,
-              text: JSON.stringify({
-                timedOut: true,
-                sessionId: session.id,
-                state: s.state,
-                pauseReason: s.pauseReason,
-                terminationReason: s.terminationReason,
-                recentEvents: [...s.recentEvents],
-              }, null, 2),
+              text: JSON.stringify(diagnostic, null, 2),
             }],
           };
         }

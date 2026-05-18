@@ -74,8 +74,9 @@ export class SessionManager {
     pid: number,
     bridgePort: number,
   ): Session {
-    if (this.sessions.size >= config.maxSessions) {
-      const active = this.list().map((s) =>
+    const activeSessions = this.list().filter((s) => s.state !== "terminated");
+    if (activeSessions.length >= config.maxSessions) {
+      const active = activeSessions.map((s) =>
         `${s.id} (${s.executable}, ${s.state})`,
       ).join(", ");
       throw new McpError(
@@ -120,8 +121,9 @@ export class SessionManager {
     architecture: "x86" | "x64",
     bridgePort: number,
   ): Session {
-    if (this.sessions.size >= config.maxSessions) {
-      const active = this.list().map((s) =>
+    const activeSessions = this.list().filter((s) => s.state !== "terminated");
+    if (activeSessions.length >= config.maxSessions) {
+      const active = activeSessions.map((s) =>
         `${s.id} (${s.executable}, ${s.state})`,
       ).join(", ");
       throw new McpError(
