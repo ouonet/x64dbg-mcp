@@ -342,23 +342,25 @@ Typical tool flows behind those prompts look like this:
 
 | Goal | Typical tools |
 | --- | --- |
-| Load and debug a binary | `load_executable`, `continue_execution`, `set_breakpoint`, `disassemble` |
+| Load and debug a binary | `load_executable`, `continue_execution`, `execute_command`, `disassemble` |
 | Attach to a live process | `attach_to_process`, `pause_execution`, `get_call_stack`, `get_registers`, `detach_session` |
 | Malware triage | `generate_security_report`, `analyze_suspicious_apis`, `detect_anti_debug`, `find_strings` |
-| Reverse engineering | `find_strings`, `get_cross_references`, `analyze_function`, `trace_execution` |
+| Reverse engineering | `find_strings`, `get_cross_references`, `analyze_function`, `wait_for_state` |
 
 ## Capabilities
 
-The server exposes **42 tools** across four practical groups.
+The server exposes **38 tools** across four practical groups.
 
 | Group | Scope |
 | --- | --- |
-| Core debugging | load or attach, control execution, manage breakpoints, inspect session state |
-| Memory and registers | read and write memory, inspect registers, switch threads, walk call stacks |
-| Analysis | disassembly, function analysis, cross references, modules, imports, exports, strings, traces |
+| Core debugging | load or attach, control execution, state observability, wait for state transitions, inspect session state |
+| Memory and registers | read and write memory, dump memory regions, create minidumps, inspect registers, walk call stacks |
+| Analysis | disassembly, function analysis, cross references, modules, imports, exports, strings |
 | Security triage | packing checks, suspicious APIs, anti-debug detection, section anomalies, consolidated reports |
 
-Representative tools include `load_executable`, `attach_to_process`, `get_status`, `read_memory`, `disassemble`, `analyze_function`, and `generate_security_report`.
+Breakpoints, conditional BPs, run-to-address, and register writes are all handled through `execute_command` (pass any x64dbg script command: `bp <addr>`, `bpcond <addr>, <expr>`, `r <reg>=<value>`, etc.).
+
+Representative tools include `load_executable`, `attach_to_process`, `get_status`, `wait_for_state`, `execute_command`, `read_memory`, `save_memory_dump`, `disassemble`, `analyze_function`, and `generate_security_report`.
 
 ## Architecture
 

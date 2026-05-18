@@ -13,6 +13,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking Changes (v1.2.0)
+
+**7 tools removed** — use `execute_command` with x64dbg script syntax instead:
+- `set_breakpoint` → `execute_command` with `bp <addr>` or `bphw <addr>`
+- `remove_breakpoint` → `execute_command` with `bpd <addr>` / `bphwd <addr>`
+- `list_breakpoints` → `execute_command` with `bplist`
+- `run_to_address` → `execute_command` with `rtu <addr>`
+- `set_register` → `execute_command` with `r <reg>=<value>`
+- `switch_thread` → `execute_command` with `switchthread <tid>`
+- `trace_execution` → `execute_command` with `tc <expr>` / `ticnd <expr>`
+
+**Bridge protocol upgraded to v2** — old bridge plugins (protocol v1) are rejected with `E_PROTOCOL_VERSION`. Update the Python bridge files alongside this release.
+
+**Execution tools return new envelope**: `continue_execution`, `step_into`, `step_over`, `step_out`, `pause_execution` now return `{ timedOut, state, pauseReason, terminationReason, lastEvent, recentEvents }` instead of the old `{ stopReason }` shape.
+
+**`load_executable` / `attach_to_process`** now wait for the first meaningful pause event (entry breakpoint, system breakpoint, or crash) and return the same state snapshot envelope plus `recentEvents` containing the full load trail. A 60-second safety timeout returns `{ timedOut: true }` if no event is received.
+
+**Session termination**: `terminate_session` and `detach_session` are idempotent. Terminated sessions remain accessible via read-only tools for a 30-second retention window (`E_SESSION_TERMINATED` is returned for write/execution tools).
+
+### Added
+
+- `wait_for_state(sessionId, { expect, timeoutMs?, pauseReasonFilter?, terminationReasonFilter? })` — wait for a session to reach a specific state; returns immediately if already matching; empty filter array `[]` matches nothing.
+- `save_memory_dump(sessionId, address, size, outputPath)` — write a raw memory region to a file (max 256 MB).
+- `create_minidump(sessionId, outputPath, dumpType?)` — create a Windows minidump (`normal` or `full`).
+- Three-layer state model per session: `state` (loading/running/paused/terminated), `pauseReason` (`PauseReason` enum), `terminationReason` (`TerminationReason` enum).
+- Per-session debug event ring buffer (50 entries, `recentEvents`).
+- MCP notifications `x64dbg/debugEvent` and `x64dbg/stateChange` emitted on each bridge event.
+- `E_SESSION_TERMINATED`, `E_PROTOCOL_VERSION`, `E_IO_FAILED`, `E_INVALID_ARGUMENT` error codes.
+- New fixtures `test/fixtures/int3.c` and `test/fixtures/exception_bp.c`.
+- `test/integration/state-observability.test.ts` covering D2/D3/D6/D8/D13/D15.
+
 ## [1.1.3] - 2026-05-09
 
 ### Added
