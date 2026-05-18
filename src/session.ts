@@ -114,6 +114,55 @@ export class SessionManager {
     return session;
   }
 
+  /** D13 — create a session in "loading" state (pid unknown until debug.load returns). */
+  createLoading(
+    executable: string,
+    architecture: "x86" | "x64",
+    bridgePort: number,
+  ): Session {
+    if (this.sessions.size >= config.maxSessions) {
+      const active = this.list().map((s) =>
+        `${s.id} (${s.executable}, ${s.state})`,
+      ).join(", ");
+      throw new McpError(
+        ErrorCode.E_SESSION_LIMIT,
+        `Reached MAX_SESSIONS=${config.maxSessions}. Active sessions: ${active}. ` +
+        `Terminate one before loading another executable.`,
+      );
+    }
+
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const session: Session = {
+      id,
+      pid: 0,
+      executable,
+      architecture,
+      state: "loading",
+      pauseReason: null,
+      terminationReason: null,
+      lastEvent: null,
+      recentEvents: [],
+      bridgePort,
+      createdAt: now,
+      lastActivity: now,
+      breakpoints: new Map(),
+      modules: [],
+    };
+
+    this.sessions.set(id, session);
+    this.stateCVs.set(id, new StateChangeCV());
+    logger.info(
+      `Session created (loading): ${id} → ${executable} (${architecture}, port ${bridgePort})`,
+    );
+    return session;
+  }
+
+  updatePid(id: string, pid: number): void {
+    const s = this.sessions.get(id);
+    if (s) s.pid = pid;
+  }
+
   get(id: string): Session {
     const s = this.sessions.get(id);
     if (!s) throw new McpError(ErrorCode.E_SESSION_NOT_FOUND, `Session not found: ${id}`);

@@ -89,16 +89,15 @@ export function registerDebugTools(server: McpServer): void {
   server.tool(
     "load_executable",
     "START HERE — load a PE executable into x64dbg and create a debugging session. " +
-      "Returns a sessionId that ALL other tools require as their first parameter. " +
+      "Returns { timedOut, sessionId, state, pauseReason, terminationReason, recentEvents, pid, architecture, entryPoint, ... }. " +
       "Auto-detects 32-bit vs 64-bit PE and launches x32dbg or x64dbg accordingly. " +
-      "With breakOnEntry=true (default): execution stops at the entry point and the " +
-      "session state becomes 'paused' — you can immediately call step_into, " +
-      "get_registers, or disassemble. " +
-      "With breakOnEntry=false: the debuggee starts running; use set_breakpoint then " +
-      "continue_execution to pause it later. " +
+      "With breakOnEntry=true (default): waits until first pause (entry BP, TLS callback, or exception intercept). " +
+      "With breakOnEntry=false: waits until the debuggee is actually running. " +
+      "Implicit 60 s safety timeout: on timeout returns timedOut:true with state:'loading' — " +
+      "call wait_for_state to keep waiting, or terminate_session to clean up. " +
+      "Read recentEvents for the full load trail (DLL loads, TLS, etc.) up to the first pause. " +
       "Multiple concurrent sessions are supported (up to MAX_SESSIONS, default 5). " +
-      "Each call spawns a fresh x64dbg instance on its own bridge port. " +
-      "Call list_sessions to see active sessions, terminate_session to free one.",
+      "Each call spawns a fresh x64dbg instance on its own bridge port.",
     {
       executablePath: z
         .string()
@@ -161,54 +160,79 @@ export function registerDebugTools(server: McpServer): void {
           throw new Error(`Bridge connect failed on port ${port}: ${err}`);
         }
 
-        // 5. Tell the bridge to load the executable
-        let result: {
+        // 5. D13 — create session in "loading" state, wire push events, then fire debug.load.
+        //    Push events (stateChange, debugEvent) arrive on the socket BEFORE the bridge
+        //    response, so recentEvents is fully populated by the time debug.load resolves.
+        const session = sessions.createLoading(executablePath, arch, port);
+        bridges.set(session.id, client);
+        rememberDebuggerForSession(session.id, child);
+        sessions.wireClient(session.id, client);
+
+        // 6. Fire debug.load with implicit 60 s safety timeout.
+        const LIFECYCLE_TIMEOUT_MS = 60_000;
+        type LoadResult = {
           pid: number;
           architecture: "x86" | "x64";
           entryPoint: string;
           modules: { name: string; base: string; size: string; path: string }[];
         };
+        const loadPromise = client.call<LoadResult>("debug.load", {
+          executablePath,
+          commandLineArgs: commandLineArgs ?? "",
+          breakOnEntry,
+          autoAnalyze,
+        });
+
+        let outcome: { timedOut: false; val: LoadResult } | { timedOut: true };
         try {
-          result = await client.call("debug.load", {
-            executablePath,
-            commandLineArgs: commandLineArgs ?? "",
-            breakOnEntry,
-            autoAnalyze,
-          });
+          outcome = await Promise.race([
+            loadPromise.then((val) => ({ timedOut: false as const, val })),
+            new Promise<{ timedOut: true }>((r) =>
+              setTimeout(() => r({ timedOut: true }), LIFECYCLE_TIMEOUT_MS)
+            ),
+          ]);
         } catch (err) {
-          try { await client.disconnect(); } catch { /* ignore */ }
-          try { child.kill(); } catch { /* ignore */ }
+          await sessions.terminate(session.id);
           throw err;
         }
 
-        // 6. Register session, bridge, and child process atomically
-        const session = sessions.create(
-          executablePath,
-          result.architecture || arch,
-          result.pid,
-          port,
-        );
-        bridges.set(session.id, client);
-        rememberDebuggerForSession(session.id, child);
+        if (outcome.timedOut) {
+          const s = sessions.peek(session.id);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                timedOut: true,
+                sessionId: session.id,
+                state: s.state,
+                pauseReason: s.pauseReason,
+                terminationReason: s.terminationReason,
+                recentEvents: [...s.recentEvents],
+              }, null, 2),
+            }],
+          };
+        }
 
-        sessions.updateState(session.id, breakOnEntry ? "paused" : "running");
-
+        // 7. Success — update pid from bridge response, peek state (set by push events).
+        const result = outcome.val;
+        sessions.updatePid(session.id, result.pid);
+        const s = sessions.peek(session.id);
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify(
-              {
-                sessionId: session.id,
-                pid: result.pid,
-                architecture: result.architecture || arch,
-                entryPoint: result.entryPoint,
-                state: session.state,
-                modulesLoaded: result.modules.length,
-                bridgePort: port,
-              },
-              null,
-              2,
-            ),
+            text: JSON.stringify({
+              timedOut: false,
+              sessionId: session.id,
+              pid: result.pid,
+              architecture: result.architecture || arch,
+              entryPoint: result.entryPoint,
+              state: s.state,
+              pauseReason: s.pauseReason,
+              terminationReason: s.terminationReason,
+              recentEvents: [...s.recentEvents],
+              modulesLoaded: result.modules.length,
+              bridgePort: port,
+            }, null, 2),
           }],
         };
       } catch (err: unknown) {
@@ -223,12 +247,12 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "attach_to_process",
-    "Attach to an already-running process by PID. Auto-detects the process architecture " +
-      "(x86 or x64) and launches the appropriate debugger if one is not already running. " +
-      "If a debugger is already active with a different target, it will be stopped first. " +
-      "With breakOnEntry=true (default): execution pauses at the current instruction. " +
-      "With breakOnEntry=false: execution continues and pauses when stable state is reached. " +
-      "Returns a sessionId that can be used with other debugging tools.",
+    "Attach to an already-running process by PID. " +
+      "Returns { timedOut, sessionId, state, pauseReason, terminationReason, recentEvents, pid, architecture, ... }. " +
+      "Waits until the post-attach system BP fires (state:'paused', pauseReason:'system_breakpoint'). " +
+      "Implicit 60 s safety timeout: on timeout returns timedOut:true with state:'loading'. " +
+      "Auto-detects x86/x64 process architecture. " +
+      "Read recentEvents for the full attach trail.",
     {
       pid: z.number().int().positive().describe("Process ID to attach to"),
       breakOnEntry: z
@@ -287,44 +311,78 @@ export function registerDebugTools(server: McpServer): void {
           throw err;
         }
 
-        // 5. Register and tell bridge to attach
-        const session = sessions.create(`<attached-pid-${pid}>`, targetArch, pid, port);
+        // 5. D13 — create session in "loading" state, wire events, then fire debug.attach.
+        const session = sessions.createLoading(`<attached-pid-${pid}>`, targetArch, port);
+        sessions.updatePid(session.id, pid);
         bridges.set(session.id, client);
         rememberDebuggerForSession(session.id, child);
+        sessions.wireClient(session.id, client);
 
+        // 6. Fire debug.attach with implicit 60 s safety timeout.
+        const LIFECYCLE_TIMEOUT_MS = 60_000;
+        type AttachResult = {
+          pid: number;
+          architecture: string;
+          entryPoint: string;
+          modules: Array<{ name: string; base: string; size: number }>;
+        };
+        const attachPromise = client.call<AttachResult>("debug.attach", {
+          sessionId: session.id,
+          pid,
+          breakOnEntry,
+          autoAnalyze,
+        });
+
+        let outcome: { timedOut: false; val: AttachResult } | { timedOut: true };
         try {
-          const result = await client.call<{
-            pid: number;
-            architecture: string;
-            entryPoint: string;
-            modules: Array<{ name: string; base: string; size: number }>;
-          }>("debug.attach", {
-            sessionId: session.id,
-            pid,
-            breakOnEntry,
-            autoAnalyze,
-          }, 90_000);
-
-          sessions.updateState(session.id, "paused");
-
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                sessionId: session.id,
-                pid: result.pid,
-                architecture: result.architecture,
-                entryPoint: result.entryPoint,
-                state: "paused",
-                modulesLoaded: 0,
-                bridgePort: port,
-              }, null, 2),
-            }],
-          };
+          outcome = await Promise.race([
+            attachPromise.then((val) => ({ timedOut: false as const, val })),
+            new Promise<{ timedOut: true }>((r) =>
+              setTimeout(() => r({ timedOut: true }), LIFECYCLE_TIMEOUT_MS)
+            ),
+          ]);
         } catch (err) {
           await sessions.terminate(session.id);
           throw err;
         }
+
+        if (outcome.timedOut) {
+          const s = sessions.peek(session.id);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                timedOut: true,
+                sessionId: session.id,
+                state: s.state,
+                pauseReason: s.pauseReason,
+                terminationReason: s.terminationReason,
+                recentEvents: [...s.recentEvents],
+              }, null, 2),
+            }],
+          };
+        }
+
+        const result = outcome.val;
+        const s = sessions.peek(session.id);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              timedOut: false,
+              sessionId: session.id,
+              pid: result.pid,
+              architecture: result.architecture,
+              entryPoint: result.entryPoint,
+              state: s.state,
+              pauseReason: s.pauseReason,
+              terminationReason: s.terminationReason,
+              recentEvents: [...s.recentEvents],
+              modulesLoaded: result.modules.length,
+              bridgePort: port,
+            }, null, 2),
+          }],
+        };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error(`attach_to_process failed: ${msg}`);

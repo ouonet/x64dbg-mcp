@@ -1354,3 +1354,99 @@ describe("T12: execution tools sync/async envelope (D5)", async () => {
     }
   });
 });
+
+// ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
+
+describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {
+  const { createMcpServer: createMcpServer13 } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions13 } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+  const { bridges: realBridges13 } = await importFresh<typeof import("../src/bridgeRegistry.js")>("src/bridgeRegistry.ts");
+
+  function forceDelete13(sessionId: string): void {
+    const s = realSessions13 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+    const b = realBridges13 as unknown as Record<string, Map<string, unknown>>;
+    b["clients"]?.delete(sessionId);
+  }
+
+  test("T13: load_executable description mentions lifecycle contract (timedOut + recentEvents)", async () => {
+    const { startHttpMcpServer } = await importFresh<typeof import("../src/httpServer.js")>("src/httpServer.ts");
+    const httpServer = await startHttpMcpServer({
+      host: "127.0.0.1", port: 0, path: "/mcp", createServer: createMcpServer13,
+    });
+    const clt = new Client({ name: "t13-schema", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://${httpServer.host}:${httpServer.port}${httpServer.path}`)
+    );
+    try {
+      await clt.connect(transport);
+      const { tools } = await clt.listTools();
+      const loadTool = tools.find((t) => t.name === "load_executable");
+      assert.ok(loadTool, "load_executable must be registered");
+      const desc = loadTool.description ?? "";
+      assert.ok(desc.includes("timedOut"), `description must mention 'timedOut', got: ${desc.slice(0, 150)}`);
+      assert.ok(desc.includes("recentEvents"), `description must mention 'recentEvents', got: ${desc.slice(0, 150)}`);
+    } finally {
+      await transport.close();
+      await clt.close();
+      await httpServer.close();
+    }
+  });
+
+  test("T13: createLoading creates session with state:loading and null pauseReason", () => {
+    const sess = realSessions13.createLoading("t13_test.exe", "x64", 19994);
+    try {
+      assert.equal(sess.state, "loading", "createLoading must set state to 'loading'");
+      assert.equal(sess.pauseReason, null, "createLoading must set pauseReason to null");
+      assert.equal(sess.pid, 0, "createLoading must set pid to 0 (unknown until load)");
+      assert.equal(sess.terminationReason, null, "terminationReason must be null");
+      assert.deepEqual(sess.recentEvents, [], "recentEvents must start empty");
+    } finally {
+      forceDelete13(sess.id);
+    }
+  });
+
+  test("T13: waitForStateChange on loading session times out and preserves state:loading", async () => {
+    const sess = realSessions13.createLoading("t13_timeout.exe", "x64", 19995);
+    try {
+      const start = Date.now();
+      const woken = await realSessions13.waitForStateChange(sess.id, 100);
+      const elapsed = Date.now() - start;
+
+      assert.equal(woken, false, "must return false on timeout (no state change occurred)");
+      assert.ok(elapsed >= 80 && elapsed < 350, `must wait ~100ms, took ${elapsed}ms`);
+      const s = realSessions13.peek(sess.id);
+      assert.equal(s.state, "loading", "state must still be 'loading' after timeout");
+      assert.equal(s.pauseReason, null, "pauseReason must remain null in loading state");
+    } finally {
+      forceDelete13(sess.id);
+    }
+  });
+
+  test("T13: waitForStateChange on loading session wakes on applyStateChange push", async () => {
+    const sess = realSessions13.createLoading("t13_success.exe", "x64", 19996);
+    try {
+      // Simulate bridge pushing stateChange after 25ms (like T6 push channel)
+      setTimeout(() => {
+        realSessions13.applyStateChange(sess.id, {
+          state: "paused",
+          pauseReason: "breakpoint",
+          terminationReason: null,
+        });
+      }, 25);
+
+      const start = Date.now();
+      const woken = await realSessions13.waitForStateChange(sess.id, 500);
+      const elapsed = Date.now() - start;
+
+      assert.equal(woken, true, "must wake when stateChange fires");
+      assert.ok(elapsed >= 20 && elapsed < 200, `must wake quickly after push, took ${elapsed}ms`);
+      const s = realSessions13.peek(sess.id);
+      assert.equal(s.state, "paused", "state must be paused after stateChange push");
+      assert.equal(s.pauseReason, "breakpoint", "pauseReason must match push payload");
+    } finally {
+      forceDelete13(sess.id);
+    }
+  });
+});
