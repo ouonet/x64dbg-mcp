@@ -251,6 +251,8 @@ export class SessionManager {
   async terminate(id: string): Promise<void> {
     const s = this.sessions.get(id);
     if (!s) return;
+    // D14 / D15 — do not reset the retention clock if already terminated.
+    if (s.state === "terminated") return;
 
     s.state = "terminated";
     // T9 — record termination timestamp for 30s retention window.

@@ -545,29 +545,67 @@ export function registerDebugTools(server: McpServer): void {
   server.tool(
     "terminate_session",
     "Stop the debuggee process and close the debugging session. " +
-      "x64dbg itself stays open and ready for the next load_executable call. " +
-      "Call this before loading a new executable, or when analysis is complete.",
+      "Idempotent: if already terminated, returns success and preserves terminationReason. " +
+      "Returns { status, sessionId, terminationReason }.",
     {
       sessionId: z.string().describe("Session ID to terminate"),
     },
     async ({ sessionId }) => {
       try {
-        try {
-          const b = bridges.has(sessionId) ? bridgeFor(sessionId) : null;
-          if (b && b.isConnected) {
-            try { await b.call("debug.stop", { sessionId }); } catch (err) {
-              logger.warn(`debug.stop failed (continuing cleanup): ${err}`);
+        if (!sessions.has(sessionId)) {
+          return {
+            content: [{ type: "text" as const, text: `Error: Session not found: ${sessionId}` }],
+            isError: true,
+          };
+        }
+        // D14 — idempotency: if already terminated, return success and preserve terminationReason
+        const existing = sessions.peek(sessionId);
+        if (existing.state === "terminated") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "terminated", sessionId,
+                terminationReason: existing.terminationReason,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // D14 — track partial cleanup failures to downgrade terminationReason
+        let partialFailure = false;
+        if (bridges.has(sessionId)) {
+          const b = bridgeFor(sessionId);
+          if (b.isConnected) {
+            try {
+              await b.call("debug.stop", { sessionId });
+            } catch (err) {
+              logger.warn(`debug.stop failed (partial failure): ${err}`);
+              partialFailure = true;
             }
           }
-        } catch { /* no bridge to stop */ }
+        }
         await sessions.terminate(sessionId);
+        if (partialFailure) {
+          try {
+            sessions.applyStateChange(sessionId, {
+              state: "terminated",
+              pauseReason: null,
+              terminationReason: "unknown",
+            });
+          } catch { /* session may already be reaped */ }
+        }
+
+        const finalState = (() => {
+          try { return sessions.peek(sessionId); } catch { return null; }
+        })();
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify(
-              { status: "terminated", sessionId, debuggerKept: false },
-              null, 2,
-            ),
+            text: JSON.stringify({
+              status: "terminated", sessionId,
+              terminationReason: finalState?.terminationReason ?? null,
+            }, null, 2),
           }],
         };
       } catch (err: unknown) {
@@ -582,7 +620,8 @@ export function registerDebugTools(server: McpServer): void {
   server.tool(
     "detach_session",
     "Detach the debugger from the current debuggee without terminating the target process. " +
-      "x64dbg itself stays open and ready for the next attach_to_process or load_executable call.",
+      "Idempotent: if already terminated/detached, returns success and preserves terminationReason. " +
+      "Returns { status, sessionId, terminationReason }.",
     {
       sessionId: z.string().describe("Session ID to detach"),
     },
@@ -594,36 +633,57 @@ export function registerDebugTools(server: McpServer): void {
             isError: true,
           };
         }
-        let b: BridgeClient;
-        try { b = bridgeFor(sessionId); } catch {
+        // D14 — idempotency: if already terminated, return success and preserve terminationReason
+        const existing = sessions.peek(sessionId);
+        if (existing.state === "terminated") {
           return {
             content: [{
               type: "text" as const,
-              text: "Error: No bridge for session — cannot detach.",
+              text: JSON.stringify({
+                status: "detached", sessionId,
+                terminationReason: existing.terminationReason,
+              }, null, 2),
             }],
-            isError: true,
-          };
-        }
-        if (!b.isConnected) {
-          return {
-            content: [{
-              type: "text" as const,
-              text: "Error: Bridge is not connected, cannot detach the live debuggee safely.",
-            }],
-            isError: true,
           };
         }
 
-        await b.call("debug.detach", { sessionId });
+        // D14 — partial failure tracking
+        let partialFailure = false;
+        let b: BridgeClient | null = null;
+        try { b = bridgeFor(sessionId); } catch { /* no bridge */ }
+        if (b && b.isConnected) {
+          try {
+            await b.call("debug.detach", { sessionId });
+          } catch (err) {
+            logger.warn(`debug.detach failed (partial failure): ${err}`);
+            partialFailure = true;
+          }
+        } else if (!b || !b.isConnected) {
+          // Bridge already gone — treat as partial failure
+          partialFailure = true;
+        }
+
         await sessions.terminate(sessionId);
+        if (partialFailure) {
+          try {
+            sessions.applyStateChange(sessionId, {
+              state: "terminated",
+              pauseReason: null,
+              terminationReason: "unknown",
+            });
+          } catch { /* session may already be reaped */ }
+        }
 
+        const finalState = (() => {
+          try { return sessions.peek(sessionId); } catch { return null; }
+        })();
         return {
           content: [{
             type: "text" as const,
-            text: JSON.stringify(
-              { status: "detached", sessionId, processKept: true, debuggerKept: false },
-              null, 2,
-            ),
+            text: JSON.stringify({
+              status: "detached", sessionId,
+              terminationReason: finalState?.terminationReason ?? null,
+            }, null, 2),
           }],
         };
       } catch (err: unknown) {

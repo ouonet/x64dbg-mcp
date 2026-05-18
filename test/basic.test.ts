@@ -1355,6 +1355,133 @@ describe("T12: execution tools sync/async envelope (D5)", async () => {
   });
 });
 
+// ─── T14: terminate / detach idempotency + cascade (D14) ───────────────────
+
+describe("T14: terminate / detach idempotency + cascade (D14)", async () => {
+  const { createMcpServer: createMcpServer14 } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions14 } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+  const { bridges: realBridges14 } = await importFresh<typeof import("../src/bridgeRegistry.js")>("src/bridgeRegistry.ts");
+  const { BridgeClient: BC14 } = await importFresh<{ BridgeClient: typeof import("../src/bridge.js").BridgeClient }>("src/bridge.ts");
+
+  interface McpInternals14 {
+    _registeredTools: Record<string, {
+      handler: (args: Record<string, unknown>, extra: Record<string, unknown>) =>
+        Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }>;
+  }
+
+  async function callToolDirect14(
+    server: ReturnType<typeof createMcpServer14>,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ text: string; isError?: boolean }> {
+    const tools = (server as unknown as McpInternals14)._registeredTools;
+    const tool = tools[name];
+    if (!tool) throw new Error(`Tool not registered: ${name}`);
+    const res = await tool.handler(args, {});
+    return { text: res.content[0]?.text ?? "", isError: res.isError };
+  }
+
+  function forceDelete14(sessionId: string): void {
+    const s = realSessions14 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+    const b = realBridges14 as unknown as Record<string, Map<string, unknown>>;
+    b["clients"]?.delete(sessionId);
+  }
+
+  test("T14: terminate_session is idempotent — second call preserves terminationReason", async () => {
+    // Create a session and mark it as already terminated (simulates natural exit before AI reacts)
+    const sess = realSessions14.createLoading("t14_term.exe", "x64", 19997);
+    realSessions14.applyStateChange(sess.id, {
+      state: "terminated",
+      pauseReason: null,
+      terminationReason: "process_exit",
+    });
+    const server = createMcpServer14();
+    try {
+      const result = await callToolDirect14(server, "terminate_session", { sessionId: sess.id });
+      assert.ok(!result.isError, `second terminate must succeed, got: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["terminationReason"], "process_exit", "must preserve existing terminationReason");
+      assert.equal(data["status"], "terminated");
+    } finally {
+      forceDelete14(sess.id);
+    }
+  });
+
+  test("T14: detach_session is idempotent — second call preserves terminationReason", async () => {
+    const sess = realSessions14.createLoading("t14_det.exe", "x64", 19998);
+    realSessions14.applyStateChange(sess.id, {
+      state: "terminated",
+      pauseReason: null,
+      terminationReason: "detached",
+    });
+    const server = createMcpServer14();
+    try {
+      const result = await callToolDirect14(server, "detach_session", { sessionId: sess.id });
+      assert.ok(!result.isError, `second detach must succeed, got: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["terminationReason"], "detached", "must preserve existing terminationReason");
+    } finally {
+      forceDelete14(sess.id);
+    }
+  });
+
+  test("T14: terminate_session partial failure (bridge debug.stop rejected) sets terminationReason:unknown", async () => {
+    // Use createRejectingMockBridge pattern from T12 (same module cache → same createRejectingMockBridge)
+    // Build an inline rejecting bridge for T14
+    const net14 = await import("node:net");
+    const bridgeSrv = net14.createServer((sock) => {
+      sock.on("error", () => { /* ignore */ });
+      let buf = "";
+      sock.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const req = JSON.parse(line) as Record<string, unknown>;
+            if (req["method"] === "protocol.probe") {
+              try { sock.write(JSON.stringify({ id: req["id"], success: true, data: { protocolVersion: "2", capabilities: [] } }) + "\n"); } catch { /* ignore */ }
+            } else {
+              try { sock.write(JSON.stringify({ id: req["id"], success: false, error: "test: method rejected" }) + "\n"); } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+        }
+      });
+    });
+    const bridgePort14 = await new Promise<number>((resolve) => {
+      bridgeSrv.listen(0, "127.0.0.1", () => {
+        const addr = bridgeSrv.address() as import("node:net").AddressInfo;
+        resolve(addr.port);
+      });
+    });
+    const bridgeClient14 = new BC14("127.0.0.1", bridgePort14);
+    await bridgeClient14.connect();
+
+    const sess = realSessions14.createLoading("t14_partial.exe", "x64", bridgePort14);
+    realBridges14.set(sess.id, bridgeClient14);
+    realSessions14.wireClient(sess.id, bridgeClient14);
+    // Session needs to be NOT terminated for cleanup to run
+    realSessions14.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+
+    const server = createMcpServer14();
+    try {
+      const result = await callToolDirect14(server, "terminate_session", { sessionId: sess.id });
+      assert.ok(!result.isError, `partial failure must not return error, got: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["terminationReason"], "unknown", "partial failure must downgrade to terminationReason:unknown");
+      assert.equal(data["status"], "terminated");
+    } finally {
+      forceDelete14(sess.id);
+      try { await bridgeClient14.disconnect(); } catch { /* ignore */ }
+      await new Promise<void>((r) => bridgeSrv.close(() => r()));
+    }
+  });
+});
+
 // ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
 
 describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {
