@@ -18,7 +18,6 @@ import {
   rememberDebuggerForSession,
   detectProcessArchitecture,
 } from "../launcher.js";
-import type { Breakpoint, BreakpointType } from "../types.js";
 
 type ToolError = { content: [{ type: "text"; text: string }]; isError: true };
 type EnvelopeResult = { content: [{ type: "text"; text: string }] };

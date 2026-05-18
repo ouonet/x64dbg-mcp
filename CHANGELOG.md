@@ -13,7 +13,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Breaking Changes (v1.2.0)
+## [1.2.0] - 2026-05-18
+
+### Breaking Changes
 
 **7 tools removed** — use `execute_command` with x64dbg script syntax instead:
 - `set_breakpoint` → `execute_command` with `bp <addr>` or `bphw <addr>`
