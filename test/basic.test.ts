@@ -329,6 +329,46 @@ describe("SessionManager", async () => {
   });
 });
 
+// ─── T11: execute_command migration description ───────────────────────────────
+
+describe("T11: execute_command description migration mapping (D9, D12)", async () => {
+  const { startHttpMcpServer } = await importFresh<
+    typeof import("../src/httpServer.js")
+  >("src/httpServer.ts");
+  const { createMcpServer } = await importFresh<
+    typeof import("../src/mcpServer.js")
+  >("src/mcpServer.ts");
+
+  test("T11: execute_command description contains key migration strings", async () => {
+    const httpServer = await startHttpMcpServer({
+      host: "127.0.0.1", port: 0, path: "/mcp", createServer: createMcpServer,
+    });
+    const client = new Client({ name: "t11-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://${httpServer.host}:${httpServer.port}${httpServer.path}`)
+    );
+    try {
+      await client.connect(transport);
+      const result = await client.listTools();
+      const tool = result.tools.find((t) => t.name === "execute_command");
+      assert.ok(tool, "execute_command must be registered");
+      const desc = tool.description ?? "";
+      // Migration commands from D9 spec
+      assert.ok(desc.includes("bp "), `description must mention 'bp <addr>': ${desc}`);
+      assert.ok(desc.includes("bpcond"), `description must mention 'bpcond': ${desc}`);
+      assert.ok(desc.includes("tc "), `description must mention 'tc <expr>': ${desc}`);
+      assert.ok(desc.includes("r "), `description must mention 'r <reg>=<value>': ${desc}`);
+      // Token count ≤ 300 (rough heuristic: chars / 4)
+      const approxTokens = Math.ceil(desc.length / 4);
+      assert.ok(approxTokens <= 300, `description ~${approxTokens} tokens, must be ≤ 300`);
+    } finally {
+      await transport.close();
+      await client.close();
+      await httpServer.close();
+    }
+  });
+});
+
 // ─── T10: 7 deprecated tools removed ─────────────────────────────────────────
 
 describe("T10: deprecated tools removed (D1, D9)", async () => {

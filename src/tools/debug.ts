@@ -835,8 +835,13 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "execute_command",
-    "Execute a raw x64dbg command string. Use this for advanced operations " +
-      "not covered by other tools. Returns the command output.",
+    "Execute a raw x64dbg command. Breakpoints: bp <addr> (sw), bph <addr>,x (hw-exec), " +
+      "bpm <addr> (mem-write), bpcond <addr>, <expr> (conditional), bpc <addr> (remove). " +
+      "Run-to: bp $temp_<addr>, run (one-shot). " +
+      "Registers: r <reg>=<value> (set), r (view all). " +
+      "Tracing: tc <expr> (trace-over until), tic <expr> (trace-into until). " +
+      "Threads: switchthread <id>. " +
+      "Docs: help.x64dbg.com/commands",
     {
       sessionId: z.string().describe("Session ID"),
       command: z.string().describe("x64dbg command, e.g. 'graph 0x401000' or 'findall 0, \"MZ\"'"),
