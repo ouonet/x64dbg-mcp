@@ -1482,6 +1482,87 @@ describe("T14: terminate / detach idempotency + cascade (D14)", async () => {
   });
 });
 
+// ─── T15: read tools state snapshot (D2, D15) ───────────────────────────────
+
+describe("T15: read tools state snapshot (D2, D15)", async () => {
+  const { createMcpServer: createMcpServer15 } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions15 } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+  const { bridges: realBridges15 } = await importFresh<typeof import("../src/bridgeRegistry.js")>("src/bridgeRegistry.ts");
+
+  interface McpInternals15 {
+    _registeredTools: Record<string, {
+      handler: (args: Record<string, unknown>, extra: Record<string, unknown>) =>
+        Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }>;
+  }
+
+  async function callToolDirect15(
+    server: ReturnType<typeof createMcpServer15>,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ text: string; isError?: boolean }> {
+    const tools = (server as unknown as McpInternals15)._registeredTools;
+    const tool = tools[name];
+    if (!tool) throw new Error(`Tool not registered: ${name}`);
+    const res = await tool.handler(args, {});
+    return { text: res.content[0]?.text ?? "", isError: res.isError };
+  }
+
+  function forceDelete15(sessionId: string): void {
+    const s = realSessions15 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+    const b = realBridges15 as unknown as Record<string, Map<string, unknown>>;
+    b["clients"]?.delete(sessionId);
+  }
+
+  test("T15: get_status includes D2 snapshot fields (pauseReason, terminationReason, lastEvent, recentEvents)", async () => {
+    const sess = realSessions15.createLoading("t15_stat.exe", "x64", 20001);
+    realSessions15.applyStateChange(sess.id, {
+      state: "paused", pauseReason: "breakpoint", terminationReason: null,
+    });
+    const server = createMcpServer15();
+    try {
+      const result = await callToolDirect15(server, "get_status", { sessionId: sess.id });
+      assert.ok(!result.isError, `get_status must not error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      const session = data["session"] as Record<string, unknown>;
+      assert.ok(session, "response must have a session object");
+      assert.ok("pauseReason" in session, "session must include pauseReason");
+      assert.ok("terminationReason" in session, "session must include terminationReason");
+      assert.ok("lastEvent" in session, "session must include lastEvent");
+      assert.ok("recentEvents" in session, "session must include recentEvents");
+      assert.equal(session["pauseReason"], "breakpoint");
+      assert.equal(session["terminationReason"], null);
+      assert.ok(Array.isArray(session["recentEvents"]), "recentEvents must be an array");
+    } finally {
+      forceDelete15(sess.id);
+    }
+  });
+
+  test("T15: list_sessions includes terminated session during 30s retention window", async () => {
+    const sess = realSessions15.createLoading("t15_list.exe", "x64", 20002);
+    realSessions15.applyStateChange(sess.id, {
+      state: "terminated", pauseReason: null, terminationReason: "process_exit",
+    });
+    const server = createMcpServer15();
+    try {
+      const result = await callToolDirect15(server, "list_sessions", {});
+      assert.ok(!result.isError, `list_sessions must not error: ${result.text}`);
+      const list = JSON.parse(result.text) as Array<Record<string, unknown>>;
+      assert.ok(Array.isArray(list), "must return an array");
+      const found = list.find((s) => s["id"] === sess.id);
+      assert.ok(found, "terminated session must appear in list during retention window");
+      assert.equal(found["state"], "terminated", "terminated session state must be 'terminated'");
+      assert.ok("pauseReason" in found, "list entry must include pauseReason");
+      assert.ok("terminationReason" in found, "list entry must include terminationReason");
+      assert.equal(found["terminationReason"], "process_exit");
+    } finally {
+      forceDelete15(sess.id);
+    }
+  });
+});
+
 // ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
 
 describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {

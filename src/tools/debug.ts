@@ -727,6 +727,10 @@ export function registerDebugTools(server: McpServer): void {
           status.session = {
             id: s.id,
             state: s.state,
+            pauseReason: s.pauseReason,
+            terminationReason: s.terminationReason,
+            lastEvent: s.lastEvent,
+            recentEvents: s.recentEvents,
             executable: s.executable,
             architecture: s.architecture,
             pid: s.pid,
