@@ -132,12 +132,54 @@ if (activeSessions.length >= config.maxSessions) { ... }
 
 - ✅ MAX_SESSIONS 槽位计数修复
 - ✅ 超时诊断消息改进
+- ✅ **主动健康检查机制**（新增）
+
+### 健康检查机制详解（新增）
+
+#### 问题
+原来的清理机制是**被动的**——只有当 x64dbg 进程崩溃或socket断开时，bridge 才会emit `disconnected` 事件，触发 session 清理。但如果用户手动关闭 x64dbg，可能出现：
+- Socket 断开检测延迟（Windows 系统可能需要数秒到数十秒）
+- Bridge reconnect 循环（20次重试，指数退避最多 30 秒延迟）
+- 在这期间，孤儿 session 仍占用 MAX_SESSIONS 槽位
+
+#### 解决方案：主动健康检查（src/healthCheck.ts）
+
+```typescript
+startHealthCheck()    // 在 server.ts 中启动
+```
+
+工作流程：
+1. **周期检查**（每 5 秒）
+   - 遍历所有活跃 session（非"terminated"）
+   - 检查每个 session 的 bridge 是否仍有效
+
+2. **检查项**
+   - Bridge 客户端是否存在（bridgeRegistry 中）
+   - Bridge 是否仍然连接（socket 状态）
+   - Bridge 是否响应（protocol.probe ping）
+
+3. **响应不及时处理**
+   - 如果 ping 超时（2 秒），立即调用 `sessions.terminate(sessionId)`
+   - 自动清理孤儿 session，释放 MAX_SESSIONS 槽位
+   - 记录详细日志便于调试
+
+#### 效果
+```
+用户手动关闭 x64dbg → socket 断开
+↓ (最多 5 秒延迟)
+健康检查发现 bridge 无响应
+↓
+自动调用 sessions.terminate()
+↓
+MAX_SESSIONS 槽位立即释放 ✓
+下一个 load_executable() 成功 ✓
+```
 
 ### 中期（建议）
 
 1. **提高 load 超时时间** — 对于加壳程序，可能需要 120 秒或更长
 2. **添加可配置入口点超时** — 允许用户指定 breakOnEntry 的等待时间
-3. **实现 bridge healthcheck** — 在创建会话前验证 bridge 是否就绪
+3. **可配置健康检查周期** — 允许用户调整检查频率（当前 5 秒）
 
 ### 长期（架构改进）
 
