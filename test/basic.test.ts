@@ -1838,6 +1838,101 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
   });
 });
 
+// ─── T18: notification emission (D7) ────────────────────────────────────────
+
+describe("T18: notification emission (D7)", async () => {
+  const { sessions: realSessions18, notificationBus: notifBus18 } =
+    await importFresh<typeof import("../src/session.js")>("src/session.ts");
+
+  function forceDelete18(sessionId: string): void {
+    const s = realSessions18 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+  }
+
+  test("T18: applyDebugEvent emits debugEvent on notificationBus", () => {
+    let sess: import("../src/types.js").Session | null = null;
+    const events: unknown[] = [];
+    const handler = (...args: unknown[]) => events.push(args);
+    try {
+      sess = realSessions18.createLoading("t18_a.exe", "x64", 20030);
+      notifBus18.on("debugEvent", handler);
+      realSessions18.applyDebugEvent(sess.id, {
+        kind: "dll_load", bpType: null, bpKind: null,
+        address: "0x77000000", tid: 1, timestamp: Date.now(),
+        detail: {},
+      } as import("../src/types.js").DebugEvent);
+      assert.equal(events.length, 1, "must emit exactly 1 debugEvent");
+      const [emittedId, emittedEvent] = events[0] as [string, unknown];
+      assert.equal(emittedId, sess.id, "emitted sessionId must match");
+      assert.ok(emittedEvent !== null && typeof emittedEvent === "object", "emitted event must be an object");
+    } finally {
+      notifBus18.off("debugEvent", handler);
+      if (sess) forceDelete18(sess.id);
+    }
+  });
+
+  test("T18: applyStateChange emits stateChange on notificationBus", () => {
+    let sess: import("../src/types.js").Session | null = null;
+    const changes: unknown[] = [];
+    const handler = (...args: unknown[]) => changes.push(args);
+    try {
+      sess = realSessions18.createLoading("t18_b.exe", "x64", 20031);
+      notifBus18.on("stateChange", handler);
+      realSessions18.applyStateChange(sess.id, {
+        state: "paused", pauseReason: "breakpoint", terminationReason: null,
+      });
+      assert.equal(changes.length, 1, "must emit exactly 1 stateChange");
+      const [emittedId, emittedState] = changes[0] as [string, Record<string, unknown>];
+      assert.equal(emittedId, sess.id, "emitted sessionId must match");
+      assert.equal(emittedState["state"], "paused");
+    } finally {
+      notifBus18.off("stateChange", handler);
+      if (sess) forceDelete18(sess.id);
+    }
+  });
+
+  test("T18: applyDebugEvent does NOT emit stateChange", () => {
+    let sess: import("../src/types.js").Session | null = null;
+    const stateChanges: unknown[] = [];
+    const handler = (...args: unknown[]) => stateChanges.push(args);
+    try {
+      sess = realSessions18.createLoading("t18_c.exe", "x64", 20032);
+      notifBus18.on("stateChange", handler);
+      realSessions18.applyDebugEvent(sess.id, {
+        kind: "dll_load", bpType: null, bpKind: null,
+        address: "0x77000000", tid: 1, timestamp: Date.now(),
+        detail: {},
+      } as import("../src/types.js").DebugEvent);
+      assert.equal(stateChanges.length, 0, "debugEvent must not emit stateChange");
+    } finally {
+      notifBus18.off("stateChange", handler);
+      if (sess) forceDelete18(sess.id);
+    }
+  });
+
+  test("T18: 5 bridge debugEvents → 5 debugEvent notifications on bus", () => {
+    let sess: import("../src/types.js").Session | null = null;
+    let count = 0;
+    const handler = () => { count++; };
+    try {
+      sess = realSessions18.createLoading("t18_d.exe", "x64", 20033);
+      notifBus18.on("debugEvent", handler);
+      for (let i = 0; i < 5; i++) {
+        realSessions18.applyDebugEvent(sess.id, {
+          kind: "dll_load", bpType: null, bpKind: null,
+          address: "0x77000000", tid: 1, timestamp: Date.now() + i,
+          detail: {},
+        } as import("../src/types.js").DebugEvent);
+      }
+      assert.equal(count, 5, "must emit 5 debugEvent notifications for 5 events");
+    } finally {
+      notifBus18.off("debugEvent", handler);
+      if (sess) forceDelete18(sess.id);
+    }
+  });
+});
+
 // ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
 
 describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {

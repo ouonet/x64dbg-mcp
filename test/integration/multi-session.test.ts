@@ -215,34 +215,15 @@ describe(
           `client bridgePort ${bPort} out of allocated range`,
         );
 
-        // ── Set breakpoints on different Winsock symbols ───────────────────
-        const bpA = parseToolResult(
-          await callTool(server, "set_breakpoint", {
-            sessionId: aSessionId,
-            address: "ws2_32.accept",
-            type: "software",
-          }),
-          "set_breakpoint",
-        );
-        assert.equal(
-          bpA.status,
-          "breakpoint_set",
-          `expected breakpoint_set for session A, got: ${JSON.stringify(bpA)}`,
-        );
-
-        const bpB = parseToolResult(
-          await callTool(server, "set_breakpoint", {
-            sessionId: bSessionId,
-            address: "ws2_32.connect",
-            type: "software",
-          }),
-          "set_breakpoint",
-        );
-        assert.equal(
-          bpB.status,
-          "breakpoint_set",
-          `expected breakpoint_set for session B, got: ${JSON.stringify(bpB)}`,
-        );
+        // ── Set breakpoints on different Winsock symbols via execute_command ─
+        await callTool(server, "execute_command", {
+          sessionId: aSessionId,
+          command: "bp ws2_32.accept",
+        });
+        await callTool(server, "execute_command", {
+          sessionId: bSessionId,
+          command: "bp ws2_32.connect",
+        });
 
         // ── Continue both in parallel ──────────────────────────────────────
         const contA = callTool(server, "continue_execution", {
@@ -260,52 +241,43 @@ describe(
         t.diagnostic(`server stop: ${JSON.stringify(stopA)}`);
         t.diagnostic(`client stop: ${JSON.stringify(stopB)}`);
 
+        // D5 envelope: { timedOut, state, pauseReason, terminationReason, lastEvent, recentEvents }
+        assert.equal(stopA.timedOut, false, `session A must not time out`);
         assert.equal(
-          stopA.stopReason,
-          "breakpoint",
-          `expected breakpoint stop in session A, got: ${JSON.stringify(stopA)}`,
+          stopA.state,
+          "paused",
+          `expected paused state in session A, got: ${JSON.stringify(stopA)}`,
         );
         assert.equal(
-          stopB.stopReason,
+          stopA.pauseReason,
           "breakpoint",
-          `expected breakpoint stop in session B, got: ${JSON.stringify(stopB)}`,
+          `expected breakpoint pauseReason in session A, got: ${JSON.stringify(stopA)}`,
+        );
+        assert.equal(stopB.timedOut, false, `session B must not time out`);
+        assert.equal(
+          stopB.state,
+          "paused",
+          `expected paused state in session B, got: ${JSON.stringify(stopB)}`,
+        );
+        assert.equal(
+          stopB.pauseReason,
+          "breakpoint",
+          `expected breakpoint pauseReason in session B, got: ${JSON.stringify(stopB)}`,
         );
 
-        // ── Verify breakpoint isolation ────────────────────────────────────
-        // list_breakpoints returns the resolved hex address per session.
-        // We don't trust the symbolic address echoed by set_breakpoint — it may
-        // pass through unchanged on some bridge versions. The ground truth is
-        // that each session has exactly one BP at a distinct concrete address.
-        const bpsA = parseToolResult(
-          await callTool(server, "list_breakpoints", { sessionId: aSessionId }),
-          "list_breakpoints",
-        );
-        const bpsB = parseToolResult(
-          await callTool(server, "list_breakpoints", { sessionId: bSessionId }),
-          "list_breakpoints",
-        );
-
-        const addrsA: string[] = (bpsA.breakpoints as Array<{ address: string }>).map(
-          (bp) => bp.address.toLowerCase(),
-        );
-        const addrsB: string[] = (bpsB.breakpoints as Array<{ address: string }>).map(
-          (bp) => bp.address.toLowerCase(),
-        );
-
-        assert.equal(addrsA.length, 1, `session A must have exactly 1 BP: ${JSON.stringify(addrsA)}`);
-        assert.equal(addrsB.length, 1, `session B must have exactly 1 BP: ${JSON.stringify(addrsB)}`);
-        assert.notEqual(addrsA[0], addrsB[0], `BPs must be at distinct addresses: A=${addrsA[0]}, B=${addrsB[0]}`);
-        assert.ok(
-          !addrsA.includes(addrsB[0]!),
-          `session A must not contain session B's BP (${addrsB[0]}), got: ${JSON.stringify(addrsA)}`,
-        );
-        assert.ok(
-          !addrsB.includes(addrsA[0]!),
-          `session B must not contain session A's BP (${addrsA[0]}), got: ${JSON.stringify(addrsB)}`,
-        );
-
-        // Suppress unused-binding warning (bpA/bpB reserved for future symbol-resolution checks)
-        void bpA; void bpB;
+        // ── Verify breakpoint isolation: each session stopped at a distinct address ─
+        // lastEvent is a DebugEvent with an address field (bpKind: "user")
+        const lastEvA = stopA.lastEvent as Record<string, unknown> | null;
+        const lastEvB = stopB.lastEvent as Record<string, unknown> | null;
+        if (lastEvA && lastEvB) {
+          assert.notEqual(
+            lastEvA["address"],
+            lastEvB["address"],
+            `sessions must stop at distinct addresses: A=${String(lastEvA["address"])}, B=${String(lastEvB["address"])}`,
+          );
+          assert.equal(lastEvA["bpKind"], "user", `session A BP kind must be "user"`);
+          assert.equal(lastEvB["bpKind"], "user", `session B BP kind must be "user"`);
+        }
 
         // ── Continue both to finish their work ─────────────────────────────
         await callTool(server, "continue_execution", { sessionId: aSessionId });
@@ -315,10 +287,11 @@ describe(
 
         // ── Terminate session A; verify B is unaffected ────────────────────
         await callTool(server, "terminate_session", { sessionId: aSessionId });
+        // D15: session stays in map as "terminated" for 30s retention; bridge is released immediately.
         assert.equal(
-          sessions.has(aSessionId),
-          false,
-          "session A should be gone after terminate",
+          sessions.peek(aSessionId).state,
+          "terminated",
+          "session A should be in terminated state after terminate",
         );
         assert.equal(
           bridges.has(aSessionId),
@@ -337,10 +310,12 @@ describe(
 
         // ── Terminate session B ────────────────────────────────────────────
         await callTool(server, "terminate_session", { sessionId: bSessionId });
+        // D15: terminated sessions remain in the map for 30s; both should be in terminated state.
+        const active = sessions.list().filter((s) => s.state !== "terminated");
         assert.equal(
-          sessions.list().length,
+          active.length,
           0,
-          "all sessions should be gone after teardown",
+          "all active (non-terminated) sessions should be gone after teardown",
         );
 
         // ── Port A should be released ──────────────────────────────────────
