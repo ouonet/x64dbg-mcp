@@ -1563,6 +1563,122 @@ describe("T15: read tools state snapshot (D2, D15)", async () => {
   });
 });
 
+// ─── T16: wait_for_state tool (D6) ──────────────────────────────────────────
+
+describe("T16: wait_for_state tool (D6)", async () => {
+  const { createMcpServer: createMcpServer16 } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions16 } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+
+  interface McpInternals16 {
+    _registeredTools: Record<string, {
+      handler: (args: Record<string, unknown>, extra: Record<string, unknown>) =>
+        Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    }>;
+  }
+
+  async function callToolDirect16(
+    server: ReturnType<typeof createMcpServer16>,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ text: string; isError?: boolean }> {
+    const tools = (server as unknown as McpInternals16)._registeredTools;
+    const tool = tools[name];
+    if (!tool) throw new Error(`Tool not registered: ${name}`);
+    const res = await tool.handler(args, {});
+    return { text: res.content[0]?.text ?? "", isError: res.isError };
+  }
+
+  function forceDelete16(sessionId: string): void {
+    const s = realSessions16 as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+  }
+
+  test("T16: already-matching condition returns matched:true in < 10ms (no wait)", async () => {
+    const sess = realSessions16.createLoading("t16_imm.exe", "x64", 20010);
+    realSessions16.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer16();
+    try {
+      const start = Date.now();
+      const result = await callToolDirect16(server, "wait_for_state", {
+        sessionId: sess.id, expect: "paused", timeoutMs: 5000,
+      });
+      const elapsed = Date.now() - start;
+      assert.ok(!result.isError, `must not error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["matched"], true, "already-matching must return matched:true");
+      assert.equal(data["state"], "paused");
+      assert.ok(elapsed < 50, `must return < 50ms when already matching, took ${elapsed}ms`);
+    } finally {
+      forceDelete16(sess.id);
+    }
+  });
+
+  test("T16: timeout returns matched:false with current state", async () => {
+    const sess = realSessions16.createLoading("t16_to.exe", "x64", 20011);
+    realSessions16.applyStateChange(sess.id, { state: "running", pauseReason: null, terminationReason: null });
+    const server = createMcpServer16();
+    try {
+      const start = Date.now();
+      const result = await callToolDirect16(server, "wait_for_state", {
+        sessionId: sess.id, expect: "paused", timeoutMs: 100,
+      });
+      const elapsed = Date.now() - start;
+      assert.ok(!result.isError, `must not error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["matched"], false, "timeout must return matched:false");
+      assert.equal(data["state"], "running", "state snapshot must reflect current state");
+      assert.ok(elapsed >= 80 && elapsed < 400, `must wait ~100ms, took ${elapsed}ms`);
+    } finally {
+      forceDelete16(sess.id);
+    }
+  });
+
+  test("T16: empty pauseReasonFilter [] always times out even when state matches", async () => {
+    const sess = realSessions16.createLoading("t16_filt.exe", "x64", 20012);
+    realSessions16.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
+    const server = createMcpServer16();
+    try {
+      const result = await callToolDirect16(server, "wait_for_state", {
+        sessionId: sess.id, expect: "paused", timeoutMs: 100,
+        pauseReasonFilter: [],   // empty = match nothing
+      });
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["matched"], false, "empty filter must never match");
+    } finally {
+      forceDelete16(sess.id);
+    }
+  });
+
+  test("T16: wakes when stateChange satisfies condition, concurrent waiters all wake", async () => {
+    const sess = realSessions16.createLoading("t16_conc.exe", "x64", 20013);
+    realSessions16.applyStateChange(sess.id, { state: "running", pauseReason: null, terminationReason: null });
+    const server = createMcpServer16();
+    try {
+      // Push stateChange after 30ms
+      setTimeout(() => {
+        realSessions16.applyStateChange(sess.id, {
+          state: "paused", pauseReason: "breakpoint", terminationReason: null,
+        });
+      }, 30);
+
+      // Two concurrent waiters on the same session
+      const [r1, r2] = await Promise.all([
+        callToolDirect16(server, "wait_for_state", { sessionId: sess.id, expect: "paused", timeoutMs: 500 }),
+        callToolDirect16(server, "wait_for_state", { sessionId: sess.id, expect: "paused", timeoutMs: 500 }),
+      ]);
+
+      assert.ok(!r1.isError && !r2.isError, "both concurrent waiters must succeed");
+      const d1 = JSON.parse(r1.text) as Record<string, unknown>;
+      const d2 = JSON.parse(r2.text) as Record<string, unknown>;
+      assert.equal(d1["matched"], true, "waiter 1 must match");
+      assert.equal(d2["matched"], true, "waiter 2 must match");
+    } finally {
+      forceDelete16(sess.id);
+    }
+  });
+});
+
 // ─── T13: lifecycle tool returns + 60 s safety timeout (D13) ────────────────
 
 describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => {

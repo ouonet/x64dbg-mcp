@@ -693,6 +693,102 @@ export function registerDebugTools(server: McpServer): void {
     }
   );
 
+  // ── Wait for state ────────────────────────────────────────────────────
+
+  server.tool(
+    "wait_for_state",
+    "Block until the session reaches the expected state, then return the full state snapshot. " +
+      "Returns { matched, state, pauseReason, terminationReason, lastEvent, recentEvents }. " +
+      "If the condition is already satisfied, returns immediately with matched:true. " +
+      "On timeout, returns matched:false with the current snapshot. " +
+      "Use pauseReasonFilter to wake only on specific pause reasons (e.g. ['breakpoint']). " +
+      "Empty filter array [] means 'match nothing' — the call always times out. " +
+      "Multiple concurrent wait_for_state calls on the same session are allowed; " +
+      "all wake independently when a matching state change arrives.",
+    {
+      sessionId: z.string().describe("Session ID"),
+      expect: z
+        .enum(["paused", "terminated", "running"])
+        .describe("Target state to wait for"),
+      timeoutMs: z
+        .number().int().min(0).max(300_000).optional().default(30_000)
+        .describe("Maximum wait time in ms (default 30 000)"),
+      pauseReasonFilter: z
+        .array(z.string()).optional()
+        .describe("Only wake when pauseReason is one of these values (undefined = any reason; [] = never match)"),
+      terminationReasonFilter: z
+        .array(z.string()).optional()
+        .describe("Only wake when terminationReason is one of these values (undefined = any; [] = never match)"),
+    },
+    async ({ sessionId, expect, timeoutMs, pauseReasonFilter, terminationReasonFilter }) => {
+      try {
+        if (!sessions.has(sessionId)) {
+          return {
+            content: [{ type: "text" as const, text: `Error: Session not found: ${sessionId}` }],
+            isError: true,
+          };
+        }
+
+        function conditionMatches(): boolean {
+          const s = sessions.peek(sessionId);
+          if (s.state !== expect) return false;
+          if (expect === "paused" && pauseReasonFilter !== undefined) {
+            if (pauseReasonFilter.length === 0) return false;
+            if (!pauseReasonFilter.includes(s.pauseReason as string)) return false;
+          }
+          if (expect === "terminated" && terminationReasonFilter !== undefined) {
+            if (terminationReasonFilter.length === 0) return false;
+            if (!terminationReasonFilter.includes(s.terminationReason as string)) return false;
+          }
+          return true;
+        }
+
+        function stateSnapshot() {
+          const s = sessions.peek(sessionId);
+          return {
+            state: s.state,
+            pauseReason: s.pauseReason,
+            terminationReason: s.terminationReason,
+            lastEvent: s.lastEvent,
+            recentEvents: s.recentEvents,
+          };
+        }
+
+        const deadline = Date.now() + timeoutMs;
+
+        while (true) {
+          if (conditionMatches()) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(
+                { matched: true, ...stateSnapshot() }, null, 2,
+              ) }],
+            };
+          }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(
+                { matched: false, ...stateSnapshot() }, null, 2,
+              ) }],
+            };
+          }
+          const woken = await sessions.waitForStateChange(sessionId, remaining);
+          if (!woken) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify(
+                { matched: false, ...stateSnapshot() }, null, 2,
+              ) }],
+            };
+          }
+          // State changed — loop to re-check condition
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // ── Get status (current debugger + session state) ─────────────────────
 
   server.tool(
