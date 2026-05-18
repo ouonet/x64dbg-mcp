@@ -247,45 +247,6 @@ export function registerMemoryTools(server: McpServer): void {
     }
   );
 
-  // ── Set register ──────────────────────────────────────────────────────
-
-  server.tool(
-    "set_register",
-    "Set the value of a single CPU register.",
-    {
-      sessionId: z.string().describe("Session ID"),
-      register: z
-        .string()
-        .describe("Register name, e.g. 'rax', 'eip', 'zf'"),
-      value: z
-        .string()
-        .describe("New value (hex for GP registers, '0'/'1' for flags)"),
-    },
-    async ({ sessionId, register, value }) => {
-      try {
-        sessions.get(sessionId);
-
-        await bridgeFor(sessionId).call("registers.set", { sessionId, register, value });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                { status: "register_set", register, value },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
-      }
-    }
-  );
-
   // ── Get call stack ────────────────────────────────────────────────────
 
   server.tool(
@@ -348,33 +309,4 @@ export function registerMemoryTools(server: McpServer): void {
     }
   );
 
-  // ── Switch thread ─────────────────────────────────────────────────────
-
-  server.tool(
-    "switch_thread",
-    "Switch the active thread. Subsequent register/stack/step operations " +
-      "will apply to this thread.",
-    {
-      sessionId: z.string().describe("Session ID"),
-      threadId: z.number().int().describe("Thread ID to switch to"),
-    },
-    async ({ sessionId, threadId }) => {
-      try {
-        sessions.get(sessionId);
-
-        const result = await bridgeFor(sessionId).call<{
-          previousThread: number;
-          currentThread: number;
-          address: string;
-        }>("threads.switch", { sessionId, threadId });
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
-      }
-    }
-  );
 }

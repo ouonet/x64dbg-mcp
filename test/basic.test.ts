@@ -329,6 +329,52 @@ describe("SessionManager", async () => {
   });
 });
 
+// ─── T10: 7 deprecated tools removed ─────────────────────────────────────────
+
+describe("T10: deprecated tools removed (D1, D9)", async () => {
+  const { startHttpMcpServer } = await importFresh<
+    typeof import("../src/httpServer.js")
+  >("src/httpServer.ts");
+  const { createMcpServer } = await importFresh<
+    typeof import("../src/mcpServer.js")
+  >("src/mcpServer.ts");
+
+  const REMOVED_TOOLS = [
+    "set_breakpoint",
+    "remove_breakpoint",
+    "list_breakpoints",
+    "run_to_address",
+    "set_register",
+    "switch_thread",
+    "trace_execution",
+  ] as const;
+
+  test("T10: all 7 deprecated tools are absent from registered tool list", async () => {
+    const httpServer = await startHttpMcpServer({
+      host: "127.0.0.1", port: 0, path: "/mcp", createServer: createMcpServer,
+    });
+    const client = new Client({ name: "t10-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://${httpServer.host}:${httpServer.port}${httpServer.path}`)
+    );
+    try {
+      await client.connect(transport);
+      const result = await client.listTools();
+      const names = result.tools.map((t) => t.name);
+      for (const removed of REMOVED_TOOLS) {
+        assert.ok(
+          !names.includes(removed),
+          `Deprecated tool '${removed}' must not be registered`
+        );
+      }
+    } finally {
+      await transport.close();
+      await client.close();
+      await httpServer.close();
+    }
+  });
+});
+
 // ─── T9: terminated session 30s retention ────────────────────────────────────
 
 describe("T9: terminated session 30s retention", async () => {
