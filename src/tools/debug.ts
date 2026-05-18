@@ -122,8 +122,9 @@ export function registerDebugTools(server: McpServer): void {
           .trim();
 
         // 1. Cap check
-        if (sessions.list().length >= config.maxSessions) {
-          const active = sessions.list().map((s) =>
+        const activeSessions = sessions.list().filter((s) => s.state !== "terminated");
+        if (activeSessions.length >= config.maxSessions) {
+          const active = activeSessions.map((s) =>
             `${s.id} (${s.executable}, ${s.state})`,
           ).join(", ");
           return {
@@ -272,8 +273,9 @@ export function registerDebugTools(server: McpServer): void {
     async ({ pid, breakOnEntry, autoAnalyze }) => {
       try {
         // 1. Cap check
-        if (sessions.list().length >= config.maxSessions) {
-          const active = sessions.list().map((s) =>
+        const activeSessions = sessions.list().filter((s) => s.state !== "terminated");
+        if (activeSessions.length >= config.maxSessions) {
+          const active = activeSessions.map((s) =>
             `${s.id} (${s.executable}, ${s.state})`,
           ).join(", ");
           return {
