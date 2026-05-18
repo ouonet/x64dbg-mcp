@@ -880,6 +880,7 @@ function createV2MockBridge(opts: {
 }): Promise<{ server: net.Server; port: number }> {
   const { probeVersion = "2", probeError, pushFrames = [] } = opts;
   const server = net.createServer((sock) => {
+    sock.on("error", () => { /* ignore ECONNRESET on test teardown */ });
     let buf = "";
     sock.on("data", (chunk) => {
       buf += chunk.toString("utf8");
@@ -1154,5 +1155,202 @@ describe("BridgeRegistry", async () => {
     const all = r.list();
     assert.equal(all.length, 2);
     assert.ok(all.includes(c1) && all.includes(c2));
+  });
+});
+
+// ─── T12: execution tools sync/async envelope ────────────────────────────────
+
+/**
+ * Mock v2 bridge that handles protocol.probe but REJECTS every other method.
+ * Used in T12 tests to verify that already-paused sessions skip the bridge call,
+ * and that fire-and-forget rejections are swallowed gracefully.
+ */
+function createRejectingMockBridge(): Promise<{ server: net.Server; port: number }> {
+  const server = net.createServer((sock) => {
+    sock.on("error", () => { /* ignore client disconnect / ECONNRESET */ });
+    let buf = "";
+    sock.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let req: Record<string, unknown>;
+        try { req = JSON.parse(line); } catch { continue; }
+        if (req["method"] === "protocol.probe") {
+          sock.write(JSON.stringify({
+            id: req["id"], success: true,
+            data: { protocolVersion: "2", capabilities: [] },
+          }) + "\n");
+        } else {
+          try {
+            sock.write(JSON.stringify({
+              id: req["id"], success: false, error: "test: method rejected",
+            }) + "\n");
+          } catch { /* socket may be closing */ }
+        }
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as net.AddressInfo;
+      resolve({ server, port: addr.port });
+    });
+  });
+}
+
+describe("T12: execution tools sync/async envelope (D5)", async () => {
+  const { createMcpServer } = await importFresh<typeof import("../src/mcpServer.js")>("src/mcpServer.ts");
+  const { sessions: realSessions } = await importFresh<typeof import("../src/session.js")>("src/session.ts");
+  const { bridges: realBridges } = await importFresh<typeof import("../src/bridgeRegistry.js")>("src/bridgeRegistry.ts");
+  const { BridgeClient: BC12 } = await importFresh<{ BridgeClient: typeof import("../src/bridge.js").BridgeClient }>("src/bridge.ts");
+
+  interface McpInternals {
+    _registeredTools: Record<string, {
+      handler: (args: Record<string, unknown>, extra: Record<string, unknown>) =>
+        Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+      inputSchema?: unknown;
+    }>;
+  }
+
+  async function callToolDirect(
+    server: ReturnType<typeof createMcpServer>,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ text: string; isError?: boolean }> {
+    const tools = (server as unknown as McpInternals)._registeredTools;
+    const tool = tools[name];
+    if (!tool) throw new Error(`Tool not registered: ${name}`);
+    const res = await tool.handler(args, {});
+    return { text: res.content[0]?.text ?? "", isError: res.isError };
+  }
+
+  /** Force-remove a session from the singleton maps, bypassing 30s retention. */
+  function forceDelete(sessionId: string): void {
+    const s = realSessions as unknown as Record<string, Map<string, unknown>>;
+    s["sessions"]?.delete(sessionId);
+    s["stateCVs"]?.delete(sessionId);
+    const b = realBridges as unknown as Record<string, Map<string, unknown>>;
+    b["clients"]?.delete(sessionId);
+  }
+
+  test("T12: execution tools expose async and timeoutMs params in schema", async () => {
+    const { startHttpMcpServer } = await importFresh<typeof import("../src/httpServer.js")>("src/httpServer.ts");
+    const httpServer = await startHttpMcpServer({
+      host: "127.0.0.1", port: 0, path: "/mcp", createServer: createMcpServer,
+    });
+    const clt = new Client({ name: "t12-schema", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://${httpServer.host}:${httpServer.port}${httpServer.path}`)
+    );
+    try {
+      await clt.connect(transport);
+      const { tools } = await clt.listTools();
+      const EXEC_TOOLS = ["continue_execution", "step_into", "step_over", "step_out", "pause_execution"];
+      for (const name of EXEC_TOOLS) {
+        const tool = tools.find((t) => t.name === name);
+        assert.ok(tool, `${name} must be registered`);
+        const props = ((tool.inputSchema as Record<string, unknown>)["properties"] as Record<string, unknown> | undefined) ?? {};
+        assert.ok("async" in props, `${name} must expose 'async' param`);
+        assert.ok("timeoutMs" in props, `${name} must expose 'timeoutMs' param`);
+      }
+    } finally {
+      await transport.close();
+      await clt.close();
+      await httpServer.close();
+    }
+  });
+
+  test("T12: continue_execution sync timeout returns { timedOut: true } envelope", async () => {
+    const { server: bridgeSrv, port: bridgePort } = await createRejectingMockBridge();
+    const bridgeClient = new BC12("127.0.0.1", bridgePort);
+    await bridgeClient.connect();
+    const sess = realSessions.create("t12_cont.exe", "x64", 19991, bridgePort);
+    realBridges.set(sess.id, bridgeClient);
+    realSessions.wireClient(sess.id, bridgeClient);
+
+    const server = createMcpServer();
+    try {
+      const start = Date.now();
+      const result = await callToolDirect(server, "continue_execution", {
+        sessionId: sess.id,
+        async: false,
+        timeoutMs: 150,
+      });
+      const elapsed = Date.now() - start;
+      assert.ok(!result.isError, `unexpected error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["timedOut"], true, `expected timedOut:true, got: ${result.text}`);
+      assert.ok("state" in data, "envelope must have state field");
+      assert.ok("pauseReason" in data, "envelope must have pauseReason field");
+      assert.ok("terminationReason" in data, "envelope must have terminationReason field");
+      assert.ok(elapsed >= 100 && elapsed < 700, `expected ~150ms wait, got ${elapsed}ms`);
+    } finally {
+      forceDelete(sess.id);
+      try { await bridgeClient.disconnect(); } catch { /* ignore */ }
+      await new Promise<void>((r) => bridgeSrv.close(() => r()));
+    }
+  });
+
+  test("T12: continue_execution async:true returns immediately with timedOut:false", async () => {
+    const { server: bridgeSrv, port: bridgePort } = await createRejectingMockBridge();
+    const bridgeClient = new BC12("127.0.0.1", bridgePort);
+    await bridgeClient.connect();
+    const sess = realSessions.create("t12_async.exe", "x64", 19992, bridgePort);
+    realBridges.set(sess.id, bridgeClient);
+    realSessions.wireClient(sess.id, bridgeClient);
+
+    const server = createMcpServer();
+    try {
+      const start = Date.now();
+      const result = await callToolDirect(server, "continue_execution", {
+        sessionId: sess.id,
+        async: true,
+      });
+      const elapsed = Date.now() - start;
+      assert.ok(!result.isError, `unexpected error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["timedOut"], false, `async mode: timedOut must be false`);
+      assert.ok("state" in data, "envelope must have state field");
+      assert.ok("pauseReason" in data, "envelope must have pauseReason field");
+      assert.ok(elapsed < 500, `async mode should return quickly, took ${elapsed}ms`);
+    } finally {
+      forceDelete(sess.id);
+      try { await bridgeClient.disconnect(); } catch { /* ignore */ }
+      await new Promise<void>((r) => bridgeSrv.close(() => r()));
+    }
+  });
+
+  test("T12: pause_execution on already-paused session returns envelope without bridge call", async () => {
+    // Rejecting bridge: current code calls debug.pause → bridge errors → isError:true
+    // New code: session is already paused → no bridge call → returns clean envelope
+    const { server: bridgeSrv, port: bridgePort } = await createRejectingMockBridge();
+    const bridgeClient = new BC12("127.0.0.1", bridgePort);
+    await bridgeClient.connect();
+    const sess = realSessions.create("t12_pause.exe", "x64", 19993, bridgePort);
+    realBridges.set(sess.id, bridgeClient);
+    realSessions.wireClient(sess.id, bridgeClient);
+    // sessions.create() sets state to "paused"
+
+    const server = createMcpServer();
+    try {
+      const start = Date.now();
+      const result = await callToolDirect(server, "pause_execution", {
+        sessionId: sess.id,
+        async: false,
+      });
+      const elapsed = Date.now() - start;
+      assert.ok(!result.isError, `pause on paused session must not error: ${result.text}`);
+      const data = JSON.parse(result.text) as Record<string, unknown>;
+      assert.equal(data["timedOut"], false, "pause no-op: timedOut must be false");
+      assert.equal(data["state"], "paused", "state must remain paused");
+      assert.ok(elapsed < 300, `pause no-op should be fast, took ${elapsed}ms`);
+    } finally {
+      forceDelete(sess.id);
+      try { await bridgeClient.disconnect(); } catch { /* ignore */ }
+      await new Promise<void>((r) => bridgeSrv.close(() => r()));
+    }
   });
 });

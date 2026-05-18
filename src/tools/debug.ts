@@ -20,16 +20,11 @@ import {
 } from "../launcher.js";
 import type { Breakpoint, BreakpointType } from "../types.js";
 
-/** States in which step/continue operations make sense. */
-const STEPPABLE_STATES = new Set(["paused", "idle"]);
+type ToolError = { content: [{ type: "text"; text: string }]; isError: true };
+type EnvelopeResult = { content: [{ type: "text"; text: string }] };
 
-/**
- * Assert a session exists and is in a steppable state.
- * Returns an error response object if the check fails, otherwise null.
- */
-function requirePaused(
-  sessionId: string
-): { content: [{ type: "text"; text: string }]; isError: true } | null {
+/** Assert session exists and is paused. Returns error response or null. */
+function requirePaused(sessionId: string): ToolError | null {
   const s = sessions.list().find((x) => x.id === sessionId);
   if (!s) {
     return {
@@ -37,7 +32,7 @@ function requirePaused(
       isError: true,
     };
   }
-  if (!STEPPABLE_STATES.has(s.state)) {
+  if (s.state !== "paused") {
     return {
       content: [{
         type: "text" as const,
@@ -48,6 +43,44 @@ function requirePaused(
     };
   }
   return null;
+}
+
+/**
+ * T12 — D5 execution envelope.
+ * Fires a bridge command (fire-and-forget) then either:
+ *   - async=true: returns immediately with current state snapshot
+ *   - async=false: waits on the per-session state-change CV until paused or timeout
+ */
+async function execEnvelope(
+  sessionId: string,
+  bridgeMethod: string,
+  bridgeParams: Record<string, unknown>,
+  opts: { async?: boolean; timeoutMs?: number },
+  optimisticState?: "running",
+): Promise<EnvelopeResult> {
+  if (optimisticState) sessions.updateState(sessionId, optimisticState);
+
+  bridgeFor(sessionId).call(bridgeMethod, bridgeParams).catch((err: unknown) => {
+    logger.warn(`${bridgeMethod} fire-and-forget error (sessionId=${sessionId}): ${err}`);
+  });
+
+  if (opts.async) {
+    const s = sessions.peek(sessionId);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        timedOut: false, state: s.state, pauseReason: s.pauseReason, terminationReason: s.terminationReason,
+      }, null, 2) }],
+    };
+  }
+
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const woken = await sessions.waitForStateChange(sessionId, timeoutMs);
+  const s = sessions.peek(sessionId);
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({
+      timedOut: !woken, state: s.state, pauseReason: s.pauseReason, terminationReason: s.terminationReason,
+    }, null, 2) }],
+  };
 }
 
 export function registerDebugTools(server: McpServer): void {
@@ -304,50 +337,27 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "continue_execution",
-    "Resume execution of a paused debuggee. Runs until the next breakpoint, " +
-      "exception, or program exit. " +
-      "REQUIRES: session state must be 'paused' (check with get_status). " +
-      "Returns stopReason ('breakpoint', 'paused', or 'exited') and the address where " +
-      "execution stopped. If stopReason is 'exited', the process has terminated.",
+    "Resume execution of a paused debuggee. Runs until the next breakpoint, exception, or exit. " +
+      "REQUIRES: session state must be 'paused'. " +
+      "Returns { timedOut, state, pauseReason, terminationReason }. " +
+      "With async:false (default) waits until paused again or timeout. " +
+      "With async:true returns immediately — pair with wait_for_state to observe the next stop.",
     {
       sessionId: z.string().describe("Session ID from load_executable"),
+      async: z.boolean().optional().default(false).describe(
+        "Return immediately without waiting for the next pause (default false)"
+      ),
+      timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe(
+        "Sync-mode wait timeout in ms (default 30 000)"
+      ),
     },
-    async ({ sessionId }) => {
+    async ({ sessionId, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        sessions.updateState(sessionId, "running");
-
-        const result = await bridgeFor(sessionId).call<{
-          reason: string;
-          address: string;
-          module?: string;
-          exception?: string;
-        }>("debug.continue", { sessionId });
-
-        sessions.updateState(sessionId, result.reason === "exited" ? "terminated" : "paused");
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  sessionId,
-                  stopReason: result.reason,
-                  currentAddress: result.address,
-                  module: result.module,
-                  exception: result.exception,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return await execEnvelope(sessionId, "debug.continue", { sessionId }, { async: isAsync, timeoutMs }, "running");
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (sessions.has(sessionId)) sessions.updateState(sessionId, "paused");
         return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
       }
     }
@@ -357,62 +367,38 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "pause_execution",
-    "Pause a running debuggee. Issues an asynchronous break and waits for " +
-      "the debuggee to actually stop. " +
-      "REQUIRES: an active session (state 'running' or 'paused'). " +
-      "If the session is already paused, this is a no-op and returns the current address. " +
-      "Returns stopReason ('paused' or 'exited') and the address where execution stopped.",
+    "Pause a running debuggee. If already paused, returns immediately (no-op). " +
+      "Returns { timedOut, state, pauseReason, terminationReason }. " +
+      "With async:false (default) waits until paused or timeout. " +
+      "With async:true issues the break and returns immediately.",
     {
       sessionId: z.string().describe("Session ID from load_executable"),
+      async: z.boolean().optional().default(false).describe(
+        "Return immediately after issuing pause without waiting (default false)"
+      ),
+      timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe(
+        "Sync-mode wait timeout in ms (default 30 000)"
+      ),
     },
-    async ({ sessionId }) => {
-      const session = sessions.get(sessionId);
-      if (!session) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: Unknown sessionId: ${sessionId}. Call load_executable first.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (session.state === "terminated") {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: Session ${sessionId} has already terminated.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+    async ({ sessionId, async: isAsync, timeoutMs }) => {
       try {
-        const result = await bridgeFor(sessionId).call<{
-          reason: string;
-          address: string;
-        }>("debug.pause", { sessionId });
-
-        sessions.updateState(sessionId, result.reason === "exited" ? "terminated" : "paused");
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  sessionId,
-                  stopReason: result.reason,
-                  currentAddress: result.address,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        const session = sessions.peek(sessionId);
+        if (session.state === "terminated") {
+          return {
+            content: [{ type: "text" as const, text: `Error: E_SESSION_TERMINATED: session ${sessionId}` }],
+            isError: true,
+          };
+        }
+        // No-op: already paused
+        if (session.state === "paused") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              timedOut: false, state: session.state, pauseReason: session.pauseReason,
+              terminationReason: session.terminationReason,
+            }, null, 2) }],
+          };
+        }
+        return await execEnvelope(sessionId, "debug.pause", { sessionId }, { async: isAsync, timeoutMs });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
@@ -426,46 +412,21 @@ export function registerDebugTools(server: McpServer): void {
     "step_into",
     "Execute one or more instructions, stepping INTO function calls. " +
       "REQUIRES: session state must be 'paused'. " +
-      "Returns the new address, disassembly, module, and key register values after stepping. " +
+      "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "Use step_over instead if you want to skip over CALL instructions.",
     {
       sessionId: z.string().describe("Session ID"),
-      count: z
-        .number()
-        .int()
-        .min(1)
-        .max(1000)
-        .default(1)
-        .describe("Number of instructions to step (default 1)"),
+      count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
+      async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
+      timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
     },
-    async ({ sessionId, count }) => {
+    async ({ sessionId, count, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        // T1: state transitions are driven by bridge events in T8. The step
-        // operation will leave state as "paused" once the bridge reports it.
-
-        const result = await bridgeFor(sessionId).call<{
-          address: string;
-          disassembly: string;
-          module?: string;
-          function?: string;
-          registers: Record<string, string>;
-        }>("debug.stepInto", { sessionId, count });
-
-        sessions.updateState(sessionId, "paused");
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-        };
+        return await execEnvelope(sessionId, "debug.stepInto", { sessionId, count }, { async: isAsync, timeoutMs });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (sessions.has(sessionId)) sessions.updateState(sessionId, "paused");
         return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
       }
     }
@@ -477,42 +438,21 @@ export function registerDebugTools(server: McpServer): void {
     "step_over",
     "Execute one or more instructions, stepping OVER function calls. " +
       "REQUIRES: session state must be 'paused'. " +
-      "If the current instruction is a CALL, the entire called function executes " +
-      "and control returns to the instruction after the CALL. " +
+      "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "Use step_into if you want to trace inside the called function.",
     {
       sessionId: z.string().describe("Session ID"),
-      count: z
-        .number()
-        .int()
-        .min(1)
-        .max(1000)
-        .default(1)
-        .describe("Number of instructions to step (default 1)"),
+      count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
+      async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
+      timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
     },
-    async ({ sessionId, count }) => {
+    async ({ sessionId, count, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        // T1: state transitions are driven by bridge events in T8. The step
-        // operation will leave state as "paused" once the bridge reports it.
-
-        const result = await bridgeFor(sessionId).call<{
-          address: string;
-          disassembly: string;
-          module?: string;
-          function?: string;
-          registers: Record<string, string>;
-        }>("debug.stepOver", { sessionId, count });
-
-        sessions.updateState(sessionId, "paused");
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        };
+        return await execEnvelope(sessionId, "debug.stepOver", { sessionId, count }, { async: isAsync, timeoutMs });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (sessions.has(sessionId)) sessions.updateState(sessionId, "paused");
         return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
       }
     }
@@ -524,34 +464,19 @@ export function registerDebugTools(server: McpServer): void {
     "step_out",
     "Run until the current function returns (execute until RET). " +
       "REQUIRES: session state must be 'paused'. " +
-      "Useful for quickly leaving a called function and returning to the caller " +
-      "without stepping through every instruction.",
+      "Returns { timedOut, state, pauseReason, terminationReason }.",
     {
       sessionId: z.string().describe("Session ID"),
+      async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
+      timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
     },
-    async ({ sessionId }) => {
+    async ({ sessionId, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
       if (stateErr) return stateErr;
       try {
-        // T1: state transitions are driven by bridge events in T8. The step
-        // operation will leave state as "paused" once the bridge reports it.
-
-        const result = await bridgeFor(sessionId).call<{
-          address: string;
-          disassembly: string;
-          returnValue?: string;
-          module?: string;
-          function?: string;
-        }>("debug.stepOut", { sessionId });
-
-        sessions.updateState(sessionId, "paused");
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        };
+        return await execEnvelope(sessionId, "debug.stepOut", { sessionId }, { async: isAsync, timeoutMs });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (sessions.has(sessionId)) sessions.updateState(sessionId, "paused");
         return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
       }
     }
