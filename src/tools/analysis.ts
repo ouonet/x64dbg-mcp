@@ -77,9 +77,8 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "analyze_function",
-    "Analyse the function that contains the given address. " +
-      "Returns boundaries, size, call graph (callers + callees), " +
-      "and whether the function is a leaf.",
+    "Analyze function boundaries, size, and call graph for the given address. " +
+      "Returns start, end, size, callers (addresses that call this), callees (addresses this calls), and isLeaf flag.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z
@@ -252,7 +251,7 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_exports",
-    "List all exported functions/symbols for a specific module.",
+    "List all exported functions/symbols from a PE module's export table. Supports name filtering.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z.string().describe("Module name (e.g. 'kernel32.dll')"),

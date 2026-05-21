@@ -267,13 +267,60 @@ _EVENT_KIND_TO_PAUSE_REASON: Dict[str, str] = {
 
 def _new_session_state() -> Dict[str, Any]:
     return {
-        "state": "loading",
+        "state": "idle",
         "pauseReason": None,
         "terminationReason": None,
         "lastEvent": None,
         "recentEvents": [],
         "updatedAt": int(time.time() * 1000),
     }
+
+
+# ---------------------------------------------------------------------------
+# Live state helpers — query x64dbg directly, no cached state.
+# ---------------------------------------------------------------------------
+
+_last_pause_reason: Optional[str] = None
+_last_pause_reason_lock = threading.Lock()
+
+
+def _set_last_pause_reason(reason: Optional[str]) -> None:
+    global _last_pause_reason
+    with _last_pause_reason_lock:
+        _last_pause_reason = reason
+
+
+def _get_last_pause_reason() -> Optional[str]:
+    with _last_pause_reason_lock:
+        return _last_pause_reason
+
+
+def _get_live_state() -> dict:
+    """Query x64dbg directly for current debuggee state (bypasses cached state)."""
+    if not INSIDE_X64DBG:
+        return {"state": "idle", "pauseReason": None, "terminationReason": None}
+    try:
+        is_debugging = sdk.DbgIsDebugging()
+    except Exception:
+        return {"state": "idle", "pauseReason": None, "terminationReason": None}
+    if not is_debugging:
+        return {"state": "idle", "pauseReason": None, "terminationReason": None}
+    try:
+        is_running = sdk.DbgIsRunning()
+    except Exception:
+        is_running = False
+    if is_running:
+        return {"state": "running", "pauseReason": None, "terminationReason": None}
+    return {
+        "state": "paused",
+        "pauseReason": _get_last_pause_reason() or "unknown",
+        "terminationReason": None,
+    }
+
+
+def _push_live_state() -> None:
+    """Push current live state to all connected clients."""
+    _push_frame({"type": "stateChange", "state": _get_live_state()})
 
 
 def _get_session_state(session_id: str) -> Dict[str, Any]:
@@ -457,6 +504,12 @@ def handler(method: str):
         _handlers[method] = fn
         return fn
     return decorator
+
+
+@handler("debug.getState")
+def handle_debug_get_state(params: dict) -> dict:
+    """Return live x64dbg state — used by the TS server on bridge 'ready'."""
+    return _get_live_state()
 
 # ---------------------------------------------------------------------------
 # x64dbg wrapper helpers (now delegating to ctypes SDK)
@@ -756,6 +809,7 @@ def handle_debug_load(params: dict) -> dict:
                 except Exception:
                     entry = 0
             ptr_size = sdk.get_ptr_size()
+            _push_live_state()
             return {
                 "pid": live_pid,
                 "architecture": "x64" if ptr_size == 8 else "x86",
@@ -809,6 +863,11 @@ def handle_debug_load(params: dict) -> dict:
             f"Check that the executable exists and is a valid PE: {exe}"
         )
 
+    # Push "loading" so the TS client knows the process is being initialized.
+    _push_frame({"type": "stateChange", "state": {
+        "state": "loading", "pauseReason": None, "terminationReason": None,
+    }})
+
     if break_on_entry:
         _cmd("bpx entry")
         sdk.DbgCmdExec("erun")
@@ -817,6 +876,11 @@ def handle_debug_load(params: dict) -> dict:
             if not sdk.DbgIsRunning():
                 break
             _time.sleep(0.1)
+        # Determine why we stopped.
+        if sdk.DbgIsDebugging() and not sdk.DbgIsRunning():
+            _set_last_pause_reason("breakpoint")
+        elif not sdk.DbgIsDebugging():
+            _set_last_pause_reason(None)
     else:
         sdk.DbgCmdExec("erun")
         # Confirm execution has actually started (up to 1 s)
@@ -831,6 +895,7 @@ def handle_debug_load(params: dict) -> dict:
             if not sdk.DbgIsRunning():
                 break
             _time.sleep(0.05)
+        _set_last_pause_reason("manual_pause")
 
     if auto_analyze:
         _cmd("analyse")
@@ -867,6 +932,10 @@ def handle_debug_load(params: dict) -> dict:
     if not break_on_entry:
         sdk.DbgCmdExec("run")
 
+    live_state = _get_live_state()
+    log_info(f"debug.load: about to push, state={live_state['state']}, pauseReason={live_state.get('pauseReason')}, _push_clients={len(_push_clients)}, DbgIsDebugging={sdk.DbgIsDebugging()}, DbgIsRunning={sdk.DbgIsRunning()}")
+    _push_live_state()
+    log_info(f"debug.load: completed")
     return result
 
 
@@ -897,6 +966,7 @@ def handle_debug_attach(params: dict) -> dict:
             log_info(f"debug.attach: PID {pid} already attached (live_pid={live_pid}) — returning existing state")
             entry = _eval_expr("cip")
             ptr_size = sdk.get_ptr_size()
+            _push_live_state()
             return {
                 "pid": live_pid,
                 "architecture": "x64" if ptr_size == 8 else "x86",
@@ -952,6 +1022,11 @@ def handle_debug_attach(params: dict) -> dict:
             f"(may require admin rights), and that no stale half-debugging state remains."
         )
 
+    # Push "loading" so the TS client knows the attach is in progress.
+    _push_frame({"type": "stateChange", "state": {
+        "state": "loading", "pauseReason": None, "terminationReason": None,
+    }})
+
     if break_on_entry:
         _cmd("bpx cip")
         sdk.DbgCmdExec("pause")
@@ -960,6 +1035,7 @@ def handle_debug_attach(params: dict) -> dict:
             if not sdk.DbgIsRunning():
                 break
             _time.sleep(0.1)
+        _set_last_pause_reason("breakpoint")
     else:
         # Pause immediately to gather stable state
         sdk.DbgCmdExec("pause")
@@ -967,6 +1043,7 @@ def handle_debug_attach(params: dict) -> dict:
             if not sdk.DbgIsRunning():
                 break
             _time.sleep(0.05)
+        _set_last_pause_reason("manual_pause")
 
     if auto_analyze:
         _cmd("analyse")
@@ -995,6 +1072,7 @@ def handle_debug_attach(params: dict) -> dict:
     if not break_on_entry:
         sdk.DbgCmdExec("run")
 
+    _push_live_state()
     return result
 
 
@@ -1070,6 +1148,8 @@ def handle_debug_continue(params: dict) -> dict:
     with contextlib.suppress(Exception):
         bp_after = sdk.get_breakpoint_list()
     reason = _infer_stop_reason(rip, bp_before, bp_after)
+    _set_last_pause_reason(None if reason == "exited" else reason)
+    _push_live_state()
     return {
         "reason": reason,
         "address": _hex(rip),
@@ -1088,8 +1168,11 @@ def handle_debug_pause(params: dict) -> dict:
     if sdk.DbgIsRunning():
         raise RuntimeError("Debuggee did not stop within 10s after pause command.")
     if not sdk.DbgIsDebugging():
+        _push_live_state()
         return {"reason": "exited", "address": "0x0"}
+    _set_last_pause_reason("manual_pause")
     rip = _eval_expr("cip")
+    _push_live_state()
     return {"reason": "paused", "address": _hex(rip)}
 
 
@@ -1100,6 +1183,8 @@ def handle_debug_step_into(params: dict) -> dict:
     for _ in range(count):
         _cmd("esti")
         _wait_for_stop()
+    _set_last_pause_reason("step")
+    _push_live_state()
     return _current_location()
 
 
@@ -1219,6 +1304,8 @@ def handle_debug_step_over(params: dict) -> dict:
     for _ in range(count):
         _cmd("esto")
         _wait_for_stop()
+    _set_last_pause_reason("step")
+    _push_live_state()
     return _current_location()
 
 
@@ -1239,6 +1326,8 @@ def handle_debug_step_out(params: dict) -> dict:
     except Exception:
         pass
 
+    _set_last_pause_reason("step")
+    _push_live_state()
     return _current_location()
 
 
@@ -1269,6 +1358,8 @@ def handle_debug_run_to(params: dict) -> dict:
                 break
             if reason == "exited":
                 break
+        _set_last_pause_reason(None if reason == "exited" else reason)
+        _push_live_state()
         return {"reached": reached, "stopAddress": _hex(rip), "reason": reason}
     finally:
         with contextlib.suppress(Exception):
@@ -1391,6 +1482,7 @@ def handle_debug_detach(params: dict) -> dict:
     global _loaded_exe_path
     if not sdk.DbgIsDebugging():
         _loaded_exe_path = None
+        _push_live_state()
         return {"detached": True, "note": "not debugging"}
 
     if not sdk.DbgCmdExec("DetachDebugger"):
@@ -1400,6 +1492,7 @@ def handle_debug_detach(params: dict) -> dict:
     while _time.time() < deadline:
         if not sdk.DbgIsDebugging():
             _loaded_exe_path = None
+            _push_live_state()
             return {"detached": True}
 
         detached_pid = 0
@@ -1407,6 +1500,7 @@ def handle_debug_detach(params: dict) -> dict:
             detached_pid = int(_eval_expr("$pid") or 0)
         if detached_pid == 0:
             _loaded_exe_path = None
+            _push_live_state()
             return {"detached": True, "note": "debugger reported pid=0 after detach"}
 
         _time.sleep(0.05)
@@ -1420,6 +1514,7 @@ def handle_debug_stop(params: dict) -> dict:
     _require_x64dbg()
     import time as _time
     if not sdk.DbgIsDebugging():
+        _push_live_state()
         return {"stopped": True, "note": "not debugging"}
     sdk.DbgCmdExec("stop")
     # Poll until x64dbg exits debug mode (max 3s)
@@ -1428,6 +1523,7 @@ def handle_debug_stop(params: dict) -> dict:
         if not sdk.DbgIsDebugging():
             break
         _time.sleep(0.05)
+    _push_live_state()
     return {"stopped": not sdk.DbgIsDebugging()}
 
 
@@ -2782,6 +2878,7 @@ class BridgeServer:
         self.port = port
         self.server_socket: Optional[socket.socket] = None
         self.running = False
+        self._monitor_stop = threading.Event()
 
     def start(self) -> None:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -2791,14 +2888,43 @@ class BridgeServer:
         self.running = True
         log_info(f"Bridge listening on {self.host}:{self.port}")
 
-        thread = threading.Thread(target=self._accept_loop, daemon=True)
-        thread.start()
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+        self._monitor_stop.clear()
+        threading.Thread(target=self._state_monitor_loop, daemon=True).start()
 
     def stop(self) -> None:
         self.running = False
+        self._monitor_stop.set()
         if self.server_socket:
             self.server_socket.close()
         log_info("Bridge server stopped")
+
+    def _state_monitor_loop(self) -> None:
+        """Poll x64dbg state every 100 ms and push stateChange on transition.
+
+        Covers state changes driven by the x64dbg UI or external events that
+        no MCP command is actively waiting on (e.g. user clicks Run/Pause,
+        process exits naturally between commands).
+        """
+        last: dict = {}
+        while not self._monitor_stop.wait(0.1):
+            if not INSIDE_X64DBG:
+                continue
+            with _push_clients_lock:
+                has_clients = bool(_push_clients)
+            if not has_clients:
+                continue
+            try:
+                current = _get_live_state()
+                changed = (
+                    last.get("state") != current["state"]
+                    or last.get("pauseReason") != current.get("pauseReason")
+                )
+                if changed:
+                    last = dict(current)
+                    _push_frame({"type": "stateChange", "state": current})
+            except Exception:
+                pass
 
     def _accept_loop(self) -> None:
         while self.running:

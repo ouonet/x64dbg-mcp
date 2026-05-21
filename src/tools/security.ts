@@ -275,9 +275,8 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "check_section_anomalies",
-    "Check PE sections for anomalies that may indicate packing, " +
-      "code injection, or tampering: writable+executable sections, " +
-      "unusual names, zero raw-size with non-zero virtual-size, high entropy.",
+    "Check PE sections for anomalies: writable+executable sections, unusual names, entropy, size mismatches. " +
+      "Returns entropy per section, anomaly flags, and a summary risk rating.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z

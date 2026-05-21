@@ -18,6 +18,7 @@ import {
   rememberDebuggerForSession,
   detectProcessArchitecture,
 } from "../launcher.js";
+import type { DebugState, PauseReason, TerminationReason } from "../types.js";
 
 type ToolError = { content: [{ type: "text"; text: string }]; isError: true };
 type EnvelopeResult = { content: [{ type: "text"; text: string }] };
@@ -87,16 +88,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "load_executable",
-    "START HERE — load a PE executable into x64dbg and create a debugging session. " +
-      "Returns { timedOut, sessionId, state, pauseReason, terminationReason, recentEvents, pid, architecture, entryPoint, ... }. " +
-      "Auto-detects 32-bit vs 64-bit PE and launches x32dbg or x64dbg accordingly. " +
-      "With breakOnEntry=true (default): waits until first pause (entry BP, TLS callback, or exception intercept). " +
-      "With breakOnEntry=false: waits until the debuggee is actually running. " +
-      "Implicit 60 s safety timeout: on timeout returns timedOut:true with state:'loading' — " +
-      "call wait_for_state to keep waiting, or terminate_session to clean up. " +
-      "Read recentEvents for the full load trail (DLL loads, TLS, etc.) up to the first pause. " +
-      "Multiple concurrent sessions are supported (up to MAX_SESSIONS, default 5). " +
-      "Each call spawns a fresh x64dbg instance on its own bridge port.",
+    "START HERE — load a PE executable and create a debugging session. Auto-detects x86/x64 and launches x32dbg/x64dbg accordingly. " +
+      "Returns sessionId, state, pid, architecture, entryPoint, and recentEvents (DLL loads, TLS, exceptions up to first pause). " +
+      "Supports breakOnEntry (wait at entry point), autoAnalyze, and optional command-line arguments. " +
+      "Timeout: 60 s safety limit; on timeout call wait_for_state to continue or terminate_session to clean up.",
     {
       executablePath: z
         .string()
@@ -151,22 +146,50 @@ export function registerDebugTools(server: McpServer): void {
           throw new Error(`launchDebuggerOnPort failed: ${err}`);
         }
 
-        // 4. Connect a fresh BridgeClient to the new x64dbg
+        // 4. Connect a fresh BridgeClient to the new x64dbg.
+        //    Register the 'ready' handler BEFORE connect() so it fires correctly —
+        //    'ready' is emitted inside connect() before the Promise resolves.
         const client = new BridgeClient(config.bridgeHost, port);
+
+        // 5. Create session in "idle" state and wire push events before connecting,
+        //    so stateChange / debugEvent pushes are captured from the first packet.
+        const session = sessions.createIdle(executablePath, arch, port);
+        bridges.set(session.id, client);
+        rememberDebuggerForSession(session.id, child);
+        sessions.wireClient(session.id, client);
+
+        // Fetch bridge's actual state once the probe handshake succeeds.
+        client.once("ready", () => {
+          void (async () => {
+            try {
+              type StateResult = {
+                state: "idle" | "paused" | "running" | "loading" | "terminated";
+                pauseReason: string | null;
+                terminationReason: string | null;
+              };
+              const state = await client.call<StateResult>("debug.getState", {}, 5_000);
+              sessions.applyStateChange(session.id, {
+                state: (state.state as DebugState) ?? "idle",
+                pauseReason: (state.pauseReason as PauseReason | null) ?? null,
+                terminationReason: (state.terminationReason as TerminationReason | null) ?? null,
+              });
+              logger.info(`Session ${session.id}: initial state = ${state.state}`);
+            } catch (err) {
+              logger.warn(`Session ${session.id}: debug.getState failed: ${err}`);
+            }
+          })();
+        });
+
         try {
           await client.connect();
         } catch (err) {
           try { child.kill(); } catch { /* ignore */ }
+          await sessions.terminate(session.id, "unknown");
           throw new Error(`Bridge connect failed on port ${port}: ${err}`);
         }
 
-        // 5. D13 — create session in "loading" state, wire push events, then fire debug.load.
-        //    Push events (stateChange, debugEvent) arrive on the socket BEFORE the bridge
-        //    response, so recentEvents is fully populated by the time debug.load resolves.
-        const session = sessions.createLoading(executablePath, arch, port);
-        bridges.set(session.id, client);
-        rememberDebuggerForSession(session.id, child);
-        sessions.wireClient(session.id, client);
+        // Transition idle → loading just before debug.load fires.
+        sessions.applyStateChange(session.id, { state: "loading", pauseReason: null, terminationReason: null });
 
         // 6. Fire debug.load with implicit 60 s safety timeout.
         const LIFECYCLE_TIMEOUT_MS = 60_000;
@@ -205,7 +228,7 @@ export function registerDebugTools(server: McpServer): void {
             pauseReason: s.pauseReason,
             terminationReason: s.terminationReason,
             recentEvents: [...s.recentEvents],
-            note: s.state === "loading"
+            note: s.state === "loading" || s.state === "idle"
               ? "Debuggee did not pause within 60s. Possible causes: (1) executable is heavily packed/obfuscated " +
                 "(prevent debugger from pausing); (2) anti-debug detection failed to bypass; (3) bridge plugin failed to initialize. " +
                 "Check recentEvents for DLL loads/exceptions. Use wait_for_state to continue waiting, or terminate_session to clean up."
@@ -218,6 +241,12 @@ export function registerDebugTools(server: McpServer): void {
             }],
           };
         }
+
+        // Wait for state to transition from "loading" to final state (paused/running/idle).
+        // The bridge.ready event + debug.load push frames should have updated it by now.
+        await sessions.waitForStateChange(session.id, 10_000).catch(() => {
+          logger.warn(`load_executable: state change notification did not arrive within 10s`);
+        });
 
         // 7. Success — update pid from bridge response, peek state (set by push events).
         const result = outcome.val;
@@ -253,12 +282,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "attach_to_process",
-    "Attach to an already-running process by PID. " +
-      "Returns { timedOut, sessionId, state, pauseReason, terminationReason, recentEvents, pid, architecture, ... }. " +
-      "Waits until the post-attach system BP fires (state:'paused', pauseReason:'system_breakpoint'). " +
-      "Implicit 60 s safety timeout: on timeout returns timedOut:true with state:'loading'. " +
-      "Auto-detects x86/x64 process architecture. " +
-      "Read recentEvents for the full attach trail.",
+    "Attach to a running process by PID and create a debugging session. Auto-detects x86/x64 architecture. " +
+      "Returns sessionId, state, pid, and recentEvents (module loads and events up to first pause). " +
+      "Waits for post-attach system breakpoint; 60 s timeout. " +
+      "Supports breakOnEntry and autoAnalyze flags.",
     {
       pid: z.number().int().positive().describe("Process ID to attach to"),
       breakOnEntry: z
@@ -309,23 +336,49 @@ export function registerDebugTools(server: McpServer): void {
         logger.info(`attach_to_process: allocated port ${port} for PID ${pid}`);
         const child = await launchDebuggerForAttachOnPort(pid, targetArch, port);
 
-        // 4. Connect bridge
+        // 4. Create session in "idle" state and wire events BEFORE connecting,
+        //    so push events from the first packet are captured.
         const client = new BridgeClient(config.bridgeHost, port);
-        try {
-          await client.connect();
-        } catch (err) {
-          try { child.kill(); } catch { /* ignore */ }
-          throw err;
-        }
-
-        // 5. D13 — create session in "loading" state, wire events, then fire debug.attach.
-        const session = sessions.createLoading(`<attached-pid-${pid}>`, targetArch, port);
+        const session = sessions.createIdle(`<attached-pid-${pid}>`, targetArch, port);
         sessions.updatePid(session.id, pid);
         bridges.set(session.id, client);
         rememberDebuggerForSession(session.id, child);
         sessions.wireClient(session.id, client);
 
-        // 6. Fire debug.attach with implicit 60 s safety timeout.
+        // Fetch bridge state once probe handshake succeeds (registered before connect).
+        client.once("ready", () => {
+          void (async () => {
+            try {
+              type StateResult = {
+                state: "idle" | "paused" | "running" | "loading" | "terminated";
+                pauseReason: string | null;
+                terminationReason: string | null;
+              };
+              const state = await client.call<StateResult>("debug.getState", {}, 5_000);
+              sessions.applyStateChange(session.id, {
+                state: (state.state as DebugState) ?? "idle",
+                pauseReason: (state.pauseReason as PauseReason | null) ?? null,
+                terminationReason: (state.terminationReason as TerminationReason | null) ?? null,
+              });
+              logger.info(`Session ${session.id}: initial state = ${state.state}`);
+            } catch (err) {
+              logger.warn(`Session ${session.id}: debug.getState failed: ${err}`);
+            }
+          })();
+        });
+
+        try {
+          await client.connect();
+        } catch (err) {
+          try { child.kill(); } catch { /* ignore */ }
+          await sessions.terminate(session.id, "unknown");
+          throw err;
+        }
+
+        // Transition idle → loading just before debug.attach fires.
+        sessions.applyStateChange(session.id, { state: "loading", pauseReason: null, terminationReason: null });
+
+        // 5. Fire debug.attach with implicit 60 s safety timeout.
         const LIFECYCLE_TIMEOUT_MS = 60_000;
         type AttachResult = {
           pid: number;
@@ -349,7 +402,7 @@ export function registerDebugTools(server: McpServer): void {
             ),
           ]);
         } catch (err) {
-          await sessions.terminate(session.id);
+          await sessions.terminate(session.id, "unknown");
           throw err;
         }
 
@@ -362,7 +415,7 @@ export function registerDebugTools(server: McpServer): void {
             pauseReason: s.pauseReason,
             terminationReason: s.terminationReason,
             recentEvents: [...s.recentEvents],
-            note: s.state === "loading"
+            note: s.state === "loading" || s.state === "idle"
               ? "Attached process did not pause within 60s. Check recentEvents for DLL loads/exceptions. " +
                 "Use wait_for_state to continue waiting, or terminate_session to clean up."
               : `Process transitioned to ${s.state} but bridge response timed out (network issue?).`,
@@ -374,6 +427,12 @@ export function registerDebugTools(server: McpServer): void {
             }],
           };
         }
+
+        // Wait for state to transition from "loading" to final state.
+        // The bridge.ready event + debug.attach push frames should have updated it by now.
+        await sessions.waitForStateChange(session.id, 10_000).catch(() => {
+          logger.warn(`attach_to_process: state change notification did not arrive within 10s`);
+        });
 
         const result = outcome.val;
         const s = sessions.peek(session.id);
@@ -409,6 +468,7 @@ export function registerDebugTools(server: McpServer): void {
     "continue_execution",
     "Resume execution of a paused debuggee. Runs until the next breakpoint, exception, or exit. " +
       "REQUIRES: session state must be 'paused'. " +
+      "CLIENT GUIDANCE: call get_status(sessionId) first when you are not sure whether the session is paused or running. " +
       "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "With async:false (default) waits until paused again or timeout. " +
       "With async:true returns immediately — pair with wait_for_state to observe the next stop.",
@@ -438,6 +498,7 @@ export function registerDebugTools(server: McpServer): void {
   server.tool(
     "pause_execution",
     "Pause a running debuggee. If already paused, returns immediately (no-op). " +
+      "CLIENT GUIDANCE: if current state is unknown, call get_status(sessionId) first. " +
       "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "With async:false (default) waits until paused or timeout. " +
       "With async:true issues the break and returns immediately.",
@@ -482,6 +543,7 @@ export function registerDebugTools(server: McpServer): void {
     "step_into",
     "Execute one or more instructions, stepping INTO function calls. " +
       "REQUIRES: session state must be 'paused'. " +
+      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
       "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "Use step_over instead if you want to skip over CALL instructions.",
     {
@@ -508,6 +570,7 @@ export function registerDebugTools(server: McpServer): void {
     "step_over",
     "Execute one or more instructions, stepping OVER function calls. " +
       "REQUIRES: session state must be 'paused'. " +
+      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
       "Returns { timedOut, state, pauseReason, terminationReason }. " +
       "Use step_into if you want to trace inside the called function.",
     {
@@ -534,6 +597,7 @@ export function registerDebugTools(server: McpServer): void {
     "step_out",
     "Run until the current function returns (execute until RET). " +
       "REQUIRES: session state must be 'paused'. " +
+      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
       "Returns { timedOut, state, pauseReason, terminationReason }.",
     {
       sessionId: z.string().describe("Session ID"),
@@ -709,18 +773,15 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "wait_for_state",
-    "Block until the session reaches the expected state, then return the full state snapshot. " +
-      "Returns { matched, state, pauseReason, terminationReason, lastEvent, recentEvents }. " +
-      "If the condition is already satisfied, returns immediately with matched:true. " +
-      "On timeout, returns matched:false with the current snapshot. " +
-      "Use pauseReasonFilter to wake only on specific pause reasons (e.g. ['breakpoint']). " +
-      "Empty filter array [] means 'match nothing' — the call always times out. " +
-      "Multiple concurrent wait_for_state calls on the same session are allowed; " +
-      "all wake independently when a matching state change arrives.",
+    "Block until session reaches the expected state (idle, paused, running, terminated), then return the snapshot. " +
+      "Returns matched (boolean), state, pauseReason, terminationReason, lastEvent, recentEvents. " +
+      "Returns immediately if condition is already true; on timeout returns matched:false. " +
+      "CLIENT GUIDANCE: after continue_execution/step_* with async:true, call wait_for_state(expect='paused') to observe the next stop. " +
+      "Optional pauseReasonFilter and terminationReasonFilter to wake only on specific reasons.",
     {
       sessionId: z.string().describe("Session ID"),
       expect: z
-        .enum(["paused", "terminated", "running"])
+        .enum(["idle", "paused", "running", "terminated"])
         .describe("Target state to wait for"),
       timeoutMs: z
         .number().int().min(0).max(300_000).optional().default(30_000)
@@ -805,11 +866,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "get_status",
-    "Query the current state of the debugger and active session. " +
+    "FIRST STEP FOR CLIENTS: query the current debugger/session state before choosing step, continue, or pause operations. " +
       "Returns bridge connectivity, session state (idle/paused/running/stepping/terminated), " +
       "current instruction pointer, active thread, and a next-step hint. " +
-      "Call this whenever you are unsure what state the debugger is in " +
-      "before issuing step/continue/breakpoint operations. " +
+      "Call this whenever you are unsure what state the debugger is in. " +
       "This is always safe to call — it does not change any debugger state.",
     {
       sessionId: z
@@ -861,12 +921,14 @@ export function registerDebugTools(server: McpServer): void {
           }
 
           const hint =
-            s.state === "paused"
+            s.state === "idle"
+              ? "Debugger is ready, no debuggee loaded. Call load_executable or attach_to_process to start debugging."
+              : s.state === "loading"
+              ? "Debuggee is being loaded. Call wait_for_state(expect=\"paused\") to block until ready."
+              : s.state === "paused"
               ? "Debuggee is paused. You may call: step_into, step_over, step_out, continue_execution, get_registers, disassemble, read_memory."
               : s.state === "running"
               ? "Debuggee is running. Wait for it to pause at a breakpoint, or call terminate_session."
-              : s.state === "loading"
-              ? "Session is initializing the debuggee. Call wait_for_state(expect=\"paused\") or get_status to track progress."
               : s.state === "terminated"
               ? "Session terminated. Call load_executable to start a new session."
               : `Session is in state '${s.state}'.`;
@@ -892,7 +954,8 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "list_sessions",
-    "List all active debugging sessions with their state and metadata.",
+    "List all active debugging sessions (state, pid, architecture, breakpoint count, etc.). " +
+      "Use this to discover open sessions, then call get_status(sessionId) for detailed state.",
     {},
     async () => {
       return {
