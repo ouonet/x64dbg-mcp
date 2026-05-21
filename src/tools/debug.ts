@@ -88,10 +88,18 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "load_executable",
-    "START HERE — load a PE executable and create a debugging session. Auto-detects x86/x64 and launches x32dbg/x64dbg accordingly. " +
-      "Returns sessionId, state, pid, architecture, entryPoint, and recentEvents (DLL loads, TLS, exceptions up to first pause). " +
-      "Supports breakOnEntry (wait at entry point), autoAnalyze, and optional command-line arguments. " +
-      "Timeout: 60 s safety limit; on timeout call wait_for_state to continue or terminate_session to clean up.",
+    "START HERE. Load a PE executable (.exe or .dll) and create a debugging session. " +
+      "Auto-detects x86/x64 and launches x32dbg or x64dbg accordingly. " +
+      "Returns: sessionId, pid, architecture, entryPoint, state, pauseReason, recentEvents (DLL loads, TLS callbacks, exceptions up to first pause), modulesLoaded, bridgePort.\n\n" +
+      "NORMAL FLOW (breakOnEntry=true, default):\n" +
+      "  1. Tool returns state='paused', pauseReason='system_breakpoint'.\n" +
+      "     system_breakpoint = Windows loader debug break — fires before any user code, always happens, not an error.\n" +
+      "     Action: call continue_execution(sessionId) to proceed past it.\n" +
+      "  2. Execution pauses again: state='paused', pauseReason='breakpoint' at entryPoint.\n" +
+      "     Now at the PE entry point. Call disassemble(sessionId, entryPoint) or continue_execution to run further.\n" +
+      "  You may see pauseReason='tls_callback' between steps 1 and 2 — call continue_execution through each.\n\n" +
+      "timedOut=true: process did not pause within 60 s. Check recentEvents for clues (missing DLL, anti-debug). " +
+      "Call wait_for_state(expect='paused') to keep waiting, or terminate_session to abort.",
     {
       executablePath: z
         .string()
@@ -282,10 +290,17 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "attach_to_process",
-    "Attach to a running process by PID and create a debugging session. Auto-detects x86/x64 architecture. " +
-      "Returns sessionId, state, pid, and recentEvents (module loads and events up to first pause). " +
-      "Waits for post-attach system breakpoint; 60 s timeout. " +
-      "Supports breakOnEntry and autoAnalyze flags.",
+    "Attach to a running process by PID and create a debugging session. " +
+      "Auto-detects x86/x64 architecture. " +
+      "Returns: sessionId, pid, architecture, entryPoint, state, pauseReason, recentEvents, modulesLoaded, bridgePort.\n\n" +
+      "NORMAL FLOW (breakOnEntry=true, default):\n" +
+      "  1. Tool returns state='paused', pauseReason='system_breakpoint'.\n" +
+      "     Windows injects a debug break on attach — this is normal, not a crash.\n" +
+      "     Action: call continue_execution(sessionId) to resume the process.\n" +
+      "  2. Process runs. To stop at a specific point: use execute_command to set a breakpoint " +
+      "     (e.g. 'bp 0x401000'), then continue_execution; or call pause_execution(sessionId) to " +
+      "     halt at the current instruction.\n\n" +
+      "timedOut=true: attach did not complete within 60 s. Call terminate_session to clean up.",
     {
       pid: z.number().int().positive().describe("Process ID to attach to"),
       breakOnEntry: z
@@ -466,12 +481,19 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "continue_execution",
-    "Resume execution of a paused debuggee. Runs until the next breakpoint, exception, or exit. " +
-      "REQUIRES: session state must be 'paused'. " +
-      "CLIENT GUIDANCE: call get_status(sessionId) first when you are not sure whether the session is paused or running. " +
-      "Returns { timedOut, state, pauseReason, terminationReason }. " +
-      "With async:false (default) waits until paused again or timeout. " +
-      "With async:true returns immediately — pair with wait_for_state to observe the next stop.",
+    "Resume a paused debuggee. Runs until the next breakpoint, exception, manual pause, or process exit. " +
+      "REQUIRES: state='paused'. Call get_status(sessionId) if unsure of current state. " +
+      "Returns: { timedOut, state, pauseReason, terminationReason }.\n\n" +
+      "pauseReason in the response tells you why execution stopped:\n" +
+      "  'breakpoint'        → software/hardware/memory BP hit; inspect with get_registers, disassemble\n" +
+      "  'system_breakpoint' → Windows loader break; call continue_execution again to proceed\n" +
+      "  'exception'         → first-chance exception; inspect with get_registers, disassemble\n" +
+      "  'manual_pause'      → pause_execution was called\n" +
+      "  'tls_callback'      → TLS callback entry; call continue_execution to skip\n" +
+      "  'trace_terminated'  → a tc/tic trace command completed\n" +
+      "  null + state='terminated' → process exited; check terminationReason\n\n" +
+      "async:true: returns immediately with current snapshot; pair with wait_for_state(expect='paused') to observe the next stop. " +
+      "timedOut:true (sync): process still running after timeoutMs; call wait_for_state or terminate_session.",
     {
       sessionId: z.string().describe("Session ID from load_executable"),
       async: z.boolean().optional().default(false).describe(
@@ -497,11 +519,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "pause_execution",
-    "Pause a running debuggee. If already paused, returns immediately (no-op). " +
-      "CLIENT GUIDANCE: if current state is unknown, call get_status(sessionId) first. " +
-      "Returns { timedOut, state, pauseReason, terminationReason }. " +
-      "With async:false (default) waits until paused or timeout. " +
-      "With async:true issues the break and returns immediately.",
+    "Interrupt a running debuggee. No-op if already paused — returns current state immediately. " +
+      "Returns: { timedOut, state, pauseReason='manual_pause', terminationReason }. " +
+      "If state is unknown, call get_status(sessionId) first — it is always safe. " +
+      "async:true: issues the break and returns immediately without waiting for confirmation.",
     {
       sessionId: z.string().describe("Session ID from load_executable"),
       async: z.boolean().optional().default(false).describe(
@@ -541,11 +562,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "step_into",
-    "Execute one or more instructions, stepping INTO function calls. " +
-      "REQUIRES: session state must be 'paused'. " +
-      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
-      "Returns { timedOut, state, pauseReason, terminationReason }. " +
-      "Use step_over instead if you want to skip over CALL instructions.",
+    "Single-step N instructions, following CALL instructions into callees. " +
+      "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason='step', terminationReason }. " +
+      "After each step the session pauses again with pauseReason='step'. " +
+      "Use step_over to skip over CALL instructions instead of entering them.",
     {
       sessionId: z.string().describe("Session ID"),
       count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
@@ -568,11 +588,9 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "step_over",
-    "Execute one or more instructions, stepping OVER function calls. " +
-      "REQUIRES: session state must be 'paused'. " +
-      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
-      "Returns { timedOut, state, pauseReason, terminationReason }. " +
-      "Use step_into if you want to trace inside the called function.",
+    "Single-step N instructions, treating each CALL as a single step (does not enter callees). " +
+      "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason='step', terminationReason }. " +
+      "Use step_into to trace inside called functions.",
     {
       sessionId: z.string().describe("Session ID"),
       count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
@@ -595,10 +613,9 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "step_out",
-    "Run until the current function returns (execute until RET). " +
-      "REQUIRES: session state must be 'paused'. " +
-      "CLIENT GUIDANCE: call get_status(sessionId) first when the pause state is uncertain. " +
-      "Returns { timedOut, state, pauseReason, terminationReason }.",
+    "Run until the current function returns (executes to its matching RET instruction). " +
+      "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason, terminationReason }. " +
+      "Useful to escape deep call chains and return to a higher-level function.",
     {
       sessionId: z.string().describe("Session ID"),
       async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
@@ -621,8 +638,10 @@ export function registerDebugTools(server: McpServer): void {
   server.tool(
     "terminate_session",
     "Stop the debuggee process and close the debugging session. " +
-      "Idempotent: if already terminated, returns success and preserves terminationReason. " +
-      "Returns { status, sessionId, terminationReason }.",
+      "Idempotent — safe to call even if the session is already terminated. " +
+      "Returns: { status='terminated', sessionId, terminationReason }. " +
+      "terminationReason values: 'process_exit', 'detached', 'bridge_lost', 'unknown'. " +
+      "Call this to free a session slot when MAX_SESSIONS is reached.",
     {
       sessionId: z.string().describe("Session ID to terminate"),
     },
@@ -695,9 +714,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "detach_session",
-    "Detach the debugger from the current debuggee without terminating the target process. " +
-      "Idempotent: if already terminated/detached, returns success and preserves terminationReason. " +
-      "Returns { status, sessionId, terminationReason }.",
+    "Detach the debugger from the process without killing it — the target process continues running. " +
+      "Idempotent — safe to call if already terminated or detached. " +
+      "Returns: { status='detached', sessionId, terminationReason }. " +
+      "Use this instead of terminate_session when you want to leave the target alive after analysis.",
     {
       sessionId: z.string().describe("Session ID to detach"),
     },
@@ -773,11 +793,15 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "wait_for_state",
-    "Block until session reaches the expected state (idle, paused, running, terminated), then return the snapshot. " +
-      "Returns matched (boolean), state, pauseReason, terminationReason, lastEvent, recentEvents. " +
-      "Returns immediately if condition is already true; on timeout returns matched:false. " +
-      "CLIENT GUIDANCE: after continue_execution/step_* with async:true, call wait_for_state(expect='paused') to observe the next stop. " +
-      "Optional pauseReasonFilter and terminationReasonFilter to wake only on specific reasons.",
+    "Block until the session reaches a target state, then return a full snapshot. " +
+      "Returns: { matched, state, pauseReason, terminationReason, lastEvent, recentEvents }. " +
+      "matched=true: condition met within timeoutMs. matched=false: timed out.\n\n" +
+      "Common patterns:\n" +
+      "  wait_for_state(expect='paused')                                   — wait for any pause\n" +
+      "  wait_for_state(expect='paused', pauseReasonFilter=['breakpoint'])  — wait only for a BP hit\n" +
+      "  wait_for_state(expect='terminated')                               — wait for process to exit\n\n" +
+      "Use after continue_execution(async:true) or load_executable to observe the next stop. " +
+      "pauseReasonFilter=[]: special case — never matches (waits until timeout); only use intentionally.",
     {
       sessionId: z.string().describe("Session ID"),
       expect: z
@@ -866,11 +890,14 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "get_status",
-    "FIRST STEP FOR CLIENTS: query the current debugger/session state before choosing step, continue, or pause operations. " +
-      "Returns bridge connectivity, session state (idle/paused/running/stepping/terminated), " +
-      "current instruction pointer, active thread, and a next-step hint. " +
-      "Call this whenever you are unsure what state the debugger is in. " +
-      "This is always safe to call — it does not change any debugger state.",
+    "Query the current session/debugger state. Always safe — never changes debugger state. " +
+      "Returns: state, pauseReason, terminationReason, lastEvent, recentEvents, currentIP (when paused), " +
+      "bridgeConnected, breakpointCount, executable, pid, architecture, and a hint describing recommended next action.\n\n" +
+      "Call this:\n" +
+      "  • Before step_into/step_over/continue when unsure if the session is paused\n" +
+      "  • After a timeout to understand what state execution reached\n" +
+      "  • Any time to get the current instruction pointer without reading registers\n\n" +
+      "Without sessionId: returns a summary of all active sessions plus a hint to call load_executable.",
     {
       sessionId: z
         .string()
@@ -954,8 +981,8 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "list_sessions",
-    "List all active debugging sessions (state, pid, architecture, breakpoint count, etc.). " +
-      "Use this to discover open sessions, then call get_status(sessionId) for detailed state.",
+    "List all active debugging sessions: id, state, pid, architecture, executable, breakpointCount. " +
+      "Call get_status(sessionId) for detailed state of a specific session.",
     {},
     async () => {
       return {
@@ -973,9 +1000,10 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "close_debugger",
-    "Kill the x64dbg or x32dbg process. Works even if the bridge is not connected. " +
-      "Use this to cleanly shut down the debugger before deploying updated plugins or " +
-      "when you need to restart the debugger.",
+    "Terminate all sessions and kill all tracked x64dbg/x32dbg processes. " +
+      "Works even when the bridge is disconnected. " +
+      "Use before deploying updated plugins or when restarting the debugger is needed. " +
+      "force=true: also kills any x64dbg.exe/x32dbg.exe not launched by this server via taskkill.",
     {
       force: z
         .boolean()
@@ -1020,9 +1048,13 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "collect_bp_args",
-    "Continue execution in a loop, collecting a memory expression at each breakpoint hit. " +
-      "Use this to trace repeated calls (e.g. AddMoudle, GetClassObject). " +
-      "The default expr 'ptr_utf16@[esp+4]' reads a wchar_t* arg from the x86 stack.",
+    "Loop: continue execution → hit breakpoint → read a memory expression → repeat N times. " +
+      "Collects the expression value at each hit, returning all values as a list. " +
+      "Use to trace repeated calls — e.g. set a BP on CreateFileW with execute_command, " +
+      "then call collect_bp_args(expr='utf16@[esp+8]') to log every filename opened. " +
+      "Default expr 'ptr_utf16@[esp+4]' reads a wchar_t* from x86 stack offset +4. " +
+      "Returns: { totalHits, args: string[], errors: string[] }. " +
+      "Prerequisite: session must be paused with at least one breakpoint already set.",
     {
       sessionId: z.string().describe("Session ID"),
       expr: z.string().optional().describe(
@@ -1053,12 +1085,24 @@ export function registerDebugTools(server: McpServer): void {
 
   server.tool(
     "execute_command",
-    "Execute a raw x64dbg command. Breakpoints: bp <addr> (sw), bph <addr>,x (hw-exec), " +
-      "bpm <addr> (mem-write), bpcond <addr>, <expr> (conditional), bpc <addr> (remove). " +
-      "Run-to: bp $temp_<addr>, run (one-shot). " +
-      "Registers: r <reg>=<value> (set), r (view all). " +
-      "Tracing: tc <expr> (trace-over until), tic <expr> (trace-into until). " +
-      "Threads: switchthread <id>. " +
+    "Execute a raw x64dbg script command synchronously and return its console output. " +
+      "Commands that resume execution (run, go, erun) do NOT wait for the next pause — " +
+      "follow with wait_for_state(expect='paused') to observe the result.\n\n" +
+      "Key commands:\n" +
+      "  Breakpoints: bp <addr>           — software BP\n" +
+      "               bph <addr>,x        — hardware exec BP\n" +
+      "               bpm <addr>          — memory write BP\n" +
+      "               bpcond <addr>,<e>   — conditional BP (e.g. 'bpcond 0x401000, eax==1')\n" +
+      "               bpc <addr>          — remove BP\n" +
+      "               bl                  — list all BPs\n" +
+      "  Run-to addr: bp $<lbl>; run      — set one-shot BP then run\n" +
+      "  Registers:   r <reg>=<val>       — set register (e.g. 'r eax=0')\n" +
+      "               r                   — view all registers\n" +
+      "  Tracing:     tc <expr>           — trace-over until expression true\n" +
+      "               tic <expr>          — trace-into until expression true\n" +
+      "  Threads:     switchthread <id>   — switch active thread\n" +
+      "  Analysis:    analyse             — re-analyze current module\n" +
+      "  Misc:        graph <addr>        — show CFG; findall 0,\"MZ\" — search\n" +
       "Docs: help.x64dbg.com/commands",
     {
       sessionId: z.string().describe("Session ID"),

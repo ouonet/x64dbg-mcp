@@ -22,13 +22,12 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "disassemble",
-    "Disassemble instructions starting at a given address in the loaded module. " +
-      "Returns address, raw bytes, mnemonic, operands, and metadata " +
-      "(is_call, is_jump, reference target) for each instruction. " +
-      "Safe to call while paused. Address may be a hex value ('0x401000') or " +
-      "a symbol name ('main', 'kernel32.CreateFileW'). " +
-      "Tip: after load_executable with breakOnEntry=true, disassemble the entry point " +
-      "returned in the load result to see where execution begins.",
+    "Disassemble instructions starting at an address or symbol. " +
+      "Returns: header (startAddress, functionName, count) followed by lines of " +
+      "'address  bytes  mnemonic operands  ; comment'. " +
+      "address: hex ('0x401000') or symbol ('main', 'CreateFileW', 'kernel32.CreateFileW'). " +
+      "Safe to call while paused or while analysing a loaded module. " +
+      "Tip: pass the entryPoint returned by load_executable to inspect the PE entry code immediately.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z
@@ -77,8 +76,9 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "analyze_function",
-    "Analyze function boundaries, size, and call graph for the given address. " +
-      "Returns start, end, size, callers (addresses that call this), callees (addresses this calls), and isLeaf flag.",
+    "Analyze a function: boundaries, size, instruction count, call graph, and isLeaf flag. " +
+      "Returns: { address, endAddress, size, instructionCount, callers (who calls this), callees (what this calls), isLeaf }. " +
+      "address: any address inside the function, or a symbol name.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z
@@ -108,8 +108,12 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_cross_references",
-    "Find all cross-references (xrefs) to or from the given address. " +
-      "Returns code references (calls/jumps) and data references (reads/writes).",
+    "Find all cross-references (xrefs) to or from an address. " +
+      "direction='to': who references this address (callers, data readers). " +
+      "direction='from': what this address references (callees, data it reads). " +
+      "direction='both': both directions. " +
+      "Returns: { address, xrefsTo: [{from, to, type, instruction, module}], xrefsFrom: [...] }. " +
+      "type values: 'call', 'jump', 'data_read', 'data_write', 'unknown'.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Target address or symbol"),
@@ -142,8 +146,10 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "list_functions",
-    "List recognised functions in the debuggee. " +
-      "Can filter by module name and/or name substring.",
+    "List all recognized functions in the debuggee: address, name, size, module. " +
+      "module: filter by module name (e.g. 'target.exe'). " +
+      "nameFilter: substring match on function name. " +
+      "Paginated via offset/limit (default limit=100, max=500).",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -180,8 +186,9 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_modules",
-    "List all modules (DLLs and the main EXE) loaded in the debuggee " +
-      "with base address, size, entry point, and file path.",
+    "List all modules (main EXE + loaded DLLs): name, path, base address, size, entry point, sections. " +
+      "Use after load_executable to see which DLLs are mapped, " +
+      "or to find a module's base address for offset calculations.",
     {
       sessionId: z.string().describe("Session ID"),
     },
@@ -210,8 +217,9 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_imports",
-    "List all imported functions for a specific module. " +
-      "Shows DLL name, function name, ordinal, and IAT address.",
+    "List imported functions for a module: importing DLL name, function name, ordinal, IAT address. " +
+      "module: defaults to main executable. dllFilter/functionFilter: substring filters. " +
+      "Use analyze_suspicious_apis to cross-reference imports against malware API patterns.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -251,7 +259,8 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_exports",
-    "List all exported functions/symbols from a PE module's export table. Supports name filtering.",
+    "List exported functions/symbols from a PE module's export table: name, ordinal, address, forwarder. " +
+      "module: required (e.g. 'kernel32.dll'). nameFilter: substring filter on export name.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z.string().describe("Module name (e.g. 'kernel32.dll')"),
@@ -284,8 +293,10 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "find_strings",
-    "Search for ASCII and Unicode strings in the debuggee's memory. " +
-      "Optionally filter by content substring or module.",
+    "Find ASCII and Unicode strings in the debuggee's mapped memory. " +
+      "Returns: { totalFound, strings: [{address, value, type, length, referencedBy}], truncated }. " +
+      "module: limit search to a specific DLL or EXE. filter: substring match. minLength: default 4. " +
+      "Use to quickly locate hardcoded URLs, registry keys, encryption keys, or debug messages.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -341,9 +352,11 @@ export function registerAnalysisTools(server: McpServer): void {
 
   server.tool(
     "get_pe_header",
-    "Parse and return the PE header information for a module: " +
-      "DOS header, NT headers, section table, data directories, " +
-      "timestamp, subsystem, characteristics, etc.",
+    "Parse the PE header of a loaded module. " +
+      "Returns: machine type, timestamp, imageBase, imageSize, entryPoint, subsystem, " +
+      "characteristics, dllCharacteristics, sections (with entropy per section), data directories. " +
+      "module: defaults to main executable. " +
+      "Use with detect_packing to correlate high-entropy sections with PE structure.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
