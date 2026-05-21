@@ -101,10 +101,11 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "detect_packing",
-    "Analyse the loaded executable for signs of packing or obfuscation. " +
-      "Checks section entropy, section name anomalies, import table size, " +
-      "entry-point location, and known packer signatures. " +
-      "Returns a confidence score and list of indicators.",
+    "Scan a PE module for signs of packing or obfuscation. " +
+      "Checks: section entropy (>7.0 = likely packed), section name anomalies, " +
+      "import table size (very few imports = packer stub), entry-point section location, known packer signatures. " +
+      "Returns: { isPacked, confidence (0–1), packerName, overallEntropy, " +
+      "indicators: [{type, description, severity}], sectionEntropies, importCount, entryPointSection }.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -142,10 +143,12 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "analyze_suspicious_apis",
-    "Cross-reference the executable's import table against a database of " +
-      "Windows APIs commonly used by malware, grouped by category " +
-      "(process injection, network, crypto, anti-debug, etc.). " +
-      "Returns per-category findings and an overall risk level.",
+    "Cross-reference the module's import table against a database of Windows APIs commonly used by malware. " +
+      "Categories covered: process_injection, process_manipulation, file_system, registry, " +
+      "network, crypto, anti_debug, privilege_escalation, hooking, service. " +
+      "Returns: { riskLevel (low/medium/high/critical), suspiciousCount, categoriesMatched, " +
+      "findings: { <category>: { description, matches: [{function, module, address}] } } }. " +
+      "includeAll=true: also include all non-suspicious imports in the response.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -233,9 +236,12 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "detect_anti_debug",
-    "Scan the loaded executable for common anti-debugging techniques: " +
-      "API checks (IsDebuggerPresent, NtQueryInformationProcess), " +
-      "timing checks, PEB flags, int 2d / int 3, TLS callbacks, etc.",
+    "Scan the module for common anti-debugging techniques. " +
+      "Detects: API checks (IsDebuggerPresent, CheckRemoteDebuggerPresent, NtQueryInformationProcess), " +
+      "timing attacks (GetTickCount, QueryPerformanceCounter), PEB flag reads, int 2d/int 3 traps, " +
+      "NtSetInformationThread (hide-from-debugger), TLS callbacks. " +
+      "Returns: { hasAntiDebug, totalTechniques, " +
+      "techniques: [{name, description, addresses, severity, bypass}], tlsCallbacks }.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -275,8 +281,10 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "check_section_anomalies",
-    "Check PE sections for anomalies: writable+executable sections, unusual names, entropy, size mismatches. " +
-      "Returns entropy per section, anomaly flags, and a summary risk rating.",
+    "Check PE sections for structural anomalies. " +
+      "Detects: WX (writable+executable) sections, unusual names, high entropy (>7.0 = packed/encrypted), " +
+      "virtual/raw size mismatches (common in unpacking stubs). " +
+      "Returns: { sections: [{name, entropy, isExecutable, isWritable, anomalies[]}], totalAnomalies, summary }.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z
@@ -318,9 +326,11 @@ export function registerSecurityTools(server: McpServer): void {
 
   server.tool(
     "generate_security_report",
-    "Run all security analysis tools and produce a consolidated report: " +
-      "packing detection, suspicious API analysis, anti-debug detection, " +
-      "and section anomaly checks. Useful as a first-pass triage.",
+    "START HERE for malware triage. Run all four security checks in parallel and produce a consolidated report. " +
+      "Covers: packing detection, suspicious API analysis, anti-debug detection, section anomaly checks. " +
+      "Returns a single JSON with: packing, suspiciousApis, antiDebug, sectionAnomalies, totalImports, generatedAt. " +
+      "Use this as the first step when analyzing an unknown or potentially malicious PE, " +
+      "then call individual tools for deeper investigation of flagged areas.",
     {
       sessionId: z.string().describe("Session ID"),
       module: z

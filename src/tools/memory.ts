@@ -53,9 +53,10 @@ export function registerMemoryTools(server: McpServer): void {
   server.tool(
     "read_memory",
     "Read raw bytes from the debuggee's virtual address space. " +
-      "Returns a hex+ASCII dump. Address must be in the debuggee's mapped memory " +
-      "(see get_memory_map for valid ranges). " +
-      "REQUIRES: session must be paused.",
+      "Returns a hex+ASCII dump. REQUIRES: state='paused'. " +
+      "address: hex string ('0x00401000') or symbol ('rip', 'main'). " +
+      "size: 1–65536 bytes (default 256). " +
+      "Use get_memory_map(sessionId) to discover valid address ranges.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Start address (hex, e.g. '0x00401000')"),
@@ -93,8 +94,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "write_memory",
-    "Write bytes to the debuggee's virtual memory. Caution: writing to wrong addresses can crash the debuggee. " +
-      "Returns address, size, and written (bytes successfully written). Address must be in valid debuggee memory.",
+    "Patch bytes in the debuggee's virtual memory. " +
+      "Use to NOP instructions, modify data, or apply live patches. " +
+      "CAUTION: writing to wrong addresses will crash the debuggee. " +
+      "hexBytes: space-separated hex pairs, e.g. '90 90 90' for three NOPs or 'EB 05' for a short jump. " +
+      "Returns: { status='written', address, bytesWritten }.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Target address (hex)"),
@@ -134,8 +138,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "search_memory",
-    "Search the debuggee's memory for a byte pattern or string. " +
-      "Supports hex patterns with wildcards (e.g. '4D 5A ?? ??') and text strings.",
+    "Search the debuggee's virtual memory for a byte pattern or string. " +
+      "searchType='hex': space-separated hex pairs with optional '??' wildcards, e.g. '4D 5A ?? ??'. " +
+      "searchType='ascii'/'unicode': plain text search. " +
+      "Returns: { totalFound, returned, truncated, matches: [{address, context}] }. " +
+      "Use get_memory_map(sessionId) to find valid address ranges for startAddress/endAddress.",
     {
       sessionId: z.string().describe("Session ID"),
       pattern: z
@@ -206,8 +213,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "get_memory_map",
-    "Return the virtual memory map of the debuggee process: " +
-      "all regions with base address, size, protection, type, and associated module.",
+    "List all virtual memory regions of the debuggee process: " +
+      "base address, size, protection flags (R/W/X), type (image/mapped/private), and associated module. " +
+      "Use this to discover what is mapped before calling read_memory or search_memory. " +
+      "filterModule: restrict to regions belonging to a specific DLL or EXE. " +
+      "filterProtection: restrict by protection, e.g. 'RWX' for executable+writable pages.",
     {
       sessionId: z.string().describe("Session ID"),
       filterModule: z
@@ -242,12 +252,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "get_registers",
-    "Read the current CPU register values of the active thread. " +
-      "Includes general-purpose registers, instruction pointer (RIP/EIP), " +
-      "flags, and optionally segment and debug registers. " +
-      "REQUIRES: session must be paused (call get_status to check). " +
-      "On x64: returns RAX, RBX, RCX, RDX, RSI, RDI, RSP, RBP, RIP, R8-R15. " +
-      "On x86: returns EAX, EBX, ECX, EDX, ESI, EDI, ESP, EBP, EIP.",
+    "Read CPU register values of the active thread. REQUIRES: state='paused'. " +
+      "Returns: { general: {<reg>: hex_string}, flags: {ZF, CF, SF, OF, ...}, segment?, debug?, fpu? }. " +
+      "x64: RAX, RBX, RCX, RDX, RSI, RDI, RSP, RBP, RIP, R8–R15, RFLAGS. " +
+      "x86: EAX, EBX, ECX, EDX, ESI, EDI, ESP, EBP, EIP, EFLAGS. " +
+      "Tip: get_status(sessionId) returns currentIP as a shortcut without fetching all registers.",
     {
       sessionId: z.string().describe("Session ID"),
       includeSegment: z
@@ -289,8 +298,9 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "get_call_stack",
-    "Get the call stack (backtrace) of the current thread. " +
-      "Shows return addresses, module names, and function names where available.",
+    "Get the call stack (backtrace) of the current thread. REQUIRES: state='paused'. " +
+      "Returns: { threadId, frames: [{index, address, returnAddress, module, function, offset, args}] }. " +
+      "Useful after an exception or unexpected pause to understand how execution reached the current point.",
     {
       sessionId: z.string().describe("Session ID"),
       maxFrames: z
@@ -324,7 +334,9 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "get_threads",
-    "List all threads in the debuggee process with their current state.",
+    "List all threads in the debuggee process: TID, handle, entry address, TEB, state, priority, name. " +
+      "Returns: { activeThreadId, threads: [ThreadInfo] }. " +
+      "To switch the active thread: execute_command(sessionId, 'switchthread <id>').",
     {
       sessionId: z.string().describe("Session ID"),
     },
@@ -351,10 +363,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "save_memory_dump",
-    "Save a raw memory region from the debuggee to a file. " +
-      "outputPath must be absolute, parent must exist, must not point to a directory. " +
-      "File is overwritten silently if it already exists. Size cap: 256 MB. " +
-      "Returns { savedTo, bytesWritten }.",
+    "Dump a raw memory region from the debuggee to a file on disk. " +
+      "Use to extract unpacked code sections, heap regions, or decoded payloads. " +
+      "address: hex or symbol (e.g. 'rip', '0x401000'). size: max 256 MB. " +
+      "outputPath: absolute path; parent directory must exist; file is overwritten silently. " +
+      "Returns: { savedTo, bytesWritten }.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Start address (hex or symbol, e.g. '0x401000', 'rip')"),
@@ -405,10 +418,11 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "create_minidump",
-    "Create a Windows minidump of the debuggee process. " +
-      "outputPath must be absolute, parent must exist, must not point to a directory. " +
-      "dumpType 'normal' includes threads/modules/stack; 'full' includes all process memory. " +
-      "Returns { savedTo, fileSize }.",
+    "Create a Windows minidump (.dmp) of the debuggee process for offline analysis. " +
+      "dumpType='normal': small file — threads, modules, call stacks. " +
+      "dumpType='full': large file — entire process memory (use for full offline analysis). " +
+      "outputPath: absolute path; parent directory must exist. " +
+      "Returns: { savedTo, fileSize }.",
     {
       sessionId: z.string().describe("Session ID"),
       outputPath: z
