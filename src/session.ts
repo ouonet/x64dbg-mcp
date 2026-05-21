@@ -4,6 +4,15 @@
  * Each session owns its own x64dbg process and bridge connection. terminate()
  * is the canonical full-cleanup path: disconnect bridge → kill x64dbg → drop
  * session entry. GC reuses the same path when an idle session expires.
+ *
+ * Session lifecycle:
+ * 1. createIdle(exe, arch, port)  → state="idle"    (bridge connected, no debuggee)
+ * 2. applyStateChange("loading")  → state="loading" (debug.load/attach in flight)
+ * 3. bridge push stateChange      → state="paused"|"running"
+ * 4. debuggee exits               → state="idle"    (session reusable)
+ *    OR session.terminate()       → state="terminated"
+ *
+ * "terminated" is a terminal state: applyStateChange will not overwrite it.
  */
 
 import crypto from "crypto";
@@ -115,8 +124,8 @@ export class SessionManager {
     return session;
   }
 
-  /** D13 — create a session in "loading" state (pid unknown until debug.load returns). */
-  createLoading(
+  /** Create a session in "idle" state — bridge connected, no debuggee loaded yet. */
+  createIdle(
     executable: string,
     architecture: "x86" | "x64",
     bridgePort: number,
@@ -140,7 +149,7 @@ export class SessionManager {
       pid: 0,
       executable,
       architecture,
-      state: "loading",
+      state: "idle",
       pauseReason: null,
       terminationReason: null,
       lastEvent: null,
@@ -155,7 +164,7 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.stateCVs.set(id, new StateChangeCV());
     logger.info(
-      `Session created (loading): ${id} → ${executable} (${architecture}, port ${bridgePort})`,
+      `Session created (idle): ${id} → ${executable} (${architecture}, port ${bridgePort})`,
     );
     return session;
   }
@@ -212,6 +221,8 @@ export class SessionManager {
   }): void {
     const s = this.sessions.get(id);
     if (!s) return;
+    // "terminated" is a terminal state — never overwrite it.
+    if (s.state === "terminated") return;
     s.state = bridgeState.state;
     s.pauseReason = bridgeState.pauseReason;
     s.terminationReason = bridgeState.terminationReason;
@@ -252,13 +263,14 @@ export class SessionManager {
    * Full cleanup: disconnect bridge, kill the owning x64dbg, drop the session.
    * Safe to call repeatedly; missing pieces are tolerated.
    */
-  async terminate(id: string): Promise<void> {
+  async terminate(id: string, reason: TerminationReason = "unknown"): Promise<void> {
     const s = this.sessions.get(id);
     if (!s) return;
     // D14 / D15 — do not reset the retention clock if already terminated.
     if (s.state === "terminated") return;
 
     s.state = "terminated";
+    s.terminationReason = reason;
     // T9 — record termination timestamp for 30s retention window.
     // Use _now so tests can inject a fake clock.
     s.terminatedAt = this._now();

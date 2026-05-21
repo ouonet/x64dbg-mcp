@@ -30,8 +30,20 @@ export interface Session {
 /**
  * D2 — coarse session phase.
  * Narrowed from v1.1.x's 7-value enum to spec's 4 values.
+ *
+ * State transitions:
+ * - "idle"       → bridge connected, no debuggee loaded
+ * - "loading"    → debug.load / debug.attach in flight
+ * - "running"    → debuggee executing
+ * - "paused"     → debuggee halted (set by bridge stateChange push)
+ * - "terminated" → session ended; retained 30s then GC'd
+ *
+ * Invariant: "terminated" is a terminal state — applyStateChange must
+ * never overwrite it. Transitions back to "idle" are valid from any
+ * non-terminal state (e.g. debuggee exits, x64dbg stays alive).
  */
 export const DEBUG_STATES = [
+  "idle",
   "loading",
   "running",
   "paused",

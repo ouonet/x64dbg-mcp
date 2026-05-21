@@ -21,7 +21,7 @@ export class BridgeRegistry {
       // Lazy import to avoid circular dep with session.ts
       void import("./session.js").then(({ sessions }) => {
         try {
-          void sessions.terminate(sessionId);
+          void sessions.terminate(sessionId, "bridge_lost");
         } catch {
           /* already gone */
         }

@@ -4,9 +4,16 @@
  * Protocol (newline-delimited JSON):
  *   → { id, method, params }
  *   ← { id, success, data?, error? }
+ *   ← [Event] { event, data, sessionId, timestamp } (push from bridge)
  *
  * The bridge plugin (plugin/x64dbg_mcp_bridge.py) runs inside x64dbg via
  * x64dbgpy and listens on a local TCP port.
+ *
+ * T14 — Lifecycle events:
+ * - 'connected-result' → connect() attempt finished (with optional Error)
+ * - 'ready' → probe handshake passed; safe to call methods
+ * - 'disconnected' → max reconnect attempts reached; session should terminate
+ * - 'bridge-event' → push event from bridge (stateChange, debugEvent, etc.)
  */
 
 import net from "net";
@@ -85,12 +92,15 @@ export class BridgeClient extends EventEmitter {
         this.reconnectAttempts = 0;
         this.buffer = "";
         // T7 — protocol.probe handshake (D10): verify bridge version before resolving.
+        // T14 — after probe succeeds, emit 'ready' so caller can fetch initial state.
         void (async () => {
           try {
             await this.doProbeHandshake();
             this.connecting = false;
             logger.info(`Bridge connected to ${this.host}:${this.port}`);
             this.emit("connected-result");
+            // T14 — emit 'ready' event to signal that callers can now safely call methods.
+            this.emit("ready");
             resolve();
           } catch (err) {
             this.connecting = false;

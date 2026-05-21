@@ -93,8 +93,8 @@ export function registerMemoryTools(server: McpServer): void {
 
   server.tool(
     "write_memory",
-    "Write bytes to the debuggee's virtual memory. Use with caution — " +
-      "writing to wrong addresses can crash the debuggee.",
+    "Write bytes to the debuggee's virtual memory. Caution: writing to wrong addresses can crash the debuggee. " +
+      "Returns address, size, and written (bytes successfully written). Address must be in valid debuggee memory.",
     {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Target address (hex)"),
