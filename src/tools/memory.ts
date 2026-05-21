@@ -50,14 +50,15 @@ function validateOutputPath(outputPath: string): string | null {
 export function registerMemoryTools(server: McpServer): void {
   // ── Read memory ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "read_memory",
-    "Read raw bytes from the debuggee's virtual address space. " +
+    {
+      description: "Read raw bytes from the debuggee's virtual address space. " +
       "Returns a hex+ASCII dump. REQUIRES: state='paused'. " +
       "address: hex string ('0x00401000') or symbol ('rip', 'main'). " +
       "size: 1–65536 bytes (default 256). " +
       "Use get_memory_map(sessionId) to discover valid address ranges.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Start address (hex, e.g. '0x00401000')"),
       size: z
@@ -67,6 +68,7 @@ export function registerMemoryTools(server: McpServer): void {
         .max(0x10000)
         .default(256)
         .describe("Number of bytes to read (max 65536, default 256)"),
+    },
     },
     async ({ sessionId, address, size }) => {
       try {
@@ -92,19 +94,21 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Write memory ──────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "write_memory",
-    "Patch bytes in the debuggee's virtual memory. " +
+    {
+      description: "Patch bytes in the debuggee's virtual memory. " +
       "Use to NOP instructions, modify data, or apply live patches. " +
       "CAUTION: writing to wrong addresses will crash the debuggee. " +
       "hexBytes: space-separated hex pairs, e.g. '90 90 90' for three NOPs or 'EB 05' for a short jump. " +
       "Returns: { status='written', address, bytesWritten }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Target address (hex)"),
       hexBytes: z
         .string()
         .describe("Hex string of bytes to write, e.g. '90 90 90' for three NOPs"),
+    },
     },
     async ({ sessionId, address, hexBytes }) => {
       try {
@@ -136,14 +140,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Search memory ─────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "search_memory",
-    "Search the debuggee's virtual memory for a byte pattern or string. " +
+    {
+      description: "Search the debuggee's virtual memory for a byte pattern or string. " +
       "searchType='hex': space-separated hex pairs with optional '??' wildcards, e.g. '4D 5A ?? ??'. " +
       "searchType='ascii'/'unicode': plain text search. " +
       "Returns: { totalFound, returned, truncated, matches: [{address, context}] }. " +
       "Use get_memory_map(sessionId) to find valid address ranges for startAddress/endAddress.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       pattern: z
         .string()
@@ -167,6 +172,7 @@ export function registerMemoryTools(server: McpServer): void {
         .max(10000)
         .default(100)
         .describe("Maximum number of results (default 100)"),
+    },
     },
     async ({ sessionId, pattern, searchType, startAddress, endAddress, maxResults }) => {
       try {
@@ -211,14 +217,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Memory map ────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_memory_map",
-    "List all virtual memory regions of the debuggee process: " +
+    {
+      description: "List all virtual memory regions of the debuggee process: " +
       "base address, size, protection flags (R/W/X), type (image/mapped/private), and associated module. " +
       "Use this to discover what is mapped before calling read_memory or search_memory. " +
       "filterModule: restrict to regions belonging to a specific DLL or EXE. " +
       "filterProtection: restrict by protection, e.g. 'RWX' for executable+writable pages.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       filterModule: z
         .string()
@@ -228,6 +235,7 @@ export function registerMemoryTools(server: McpServer): void {
         .string()
         .optional()
         .describe("Optional protection filter, e.g. 'ERW' (Execute-Read-Write)"),
+    },
     },
     async ({ sessionId, filterModule, filterProtection }) => {
       try {
@@ -250,14 +258,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Get registers ─────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_registers",
-    "Read CPU register values of the active thread. REQUIRES: state='paused'. " +
+    {
+      description: "Read CPU register values of the active thread. REQUIRES: state='paused'. " +
       "Returns: { general: {<reg>: hex_string}, flags: {ZF, CF, SF, OF, ...}, segment?, debug?, fpu? }. " +
       "x64: RAX, RBX, RCX, RDX, RSI, RDI, RSP, RBP, RIP, R8–R15, RFLAGS. " +
       "x86: EAX, EBX, ECX, EDX, ESI, EDI, ESP, EBP, EIP, EFLAGS. " +
       "Tip: get_status(sessionId) returns currentIP as a shortcut without fetching all registers.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       includeSegment: z
         .boolean()
@@ -271,6 +280,7 @@ export function registerMemoryTools(server: McpServer): void {
         .boolean()
         .default(false)
         .describe("Include FPU / SSE registers"),
+    },
     },
     async ({ sessionId, includeSegment, includeDebug, includeFpu }) => {
       try {
@@ -296,12 +306,13 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Get call stack ────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_call_stack",
-    "Get the call stack (backtrace) of the current thread. REQUIRES: state='paused'. " +
+    {
+      description: "Get the call stack (backtrace) of the current thread. REQUIRES: state='paused'. " +
       "Returns: { threadId, frames: [{index, address, returnAddress, module, function, offset, args}] }. " +
       "Useful after an exception or unexpected pause to understand how execution reached the current point.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       maxFrames: z
         .number()
@@ -310,6 +321,7 @@ export function registerMemoryTools(server: McpServer): void {
         .max(256)
         .default(50)
         .describe("Maximum stack frames to return (default 50)"),
+    },
     },
     async ({ sessionId, maxFrames }) => {
       try {
@@ -332,13 +344,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Get threads ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_threads",
-    "List all threads in the debuggee process: TID, handle, entry address, TEB, state, priority, name. " +
+    {
+      description: "List all threads in the debuggee process: TID, handle, entry address, TEB, state, priority, name. " +
       "Returns: { activeThreadId, threads: [ThreadInfo] }. " +
       "To switch the active thread: execute_command(sessionId, 'switchthread <id>').",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
+    },
     },
     async ({ sessionId }) => {
       try {
@@ -361,14 +375,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Save memory dump ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "save_memory_dump",
-    "Dump a raw memory region from the debuggee to a file on disk. " +
+    {
+      description: "Dump a raw memory region from the debuggee to a file on disk. " +
       "Use to extract unpacked code sections, heap regions, or decoded payloads. " +
       "address: hex or symbol (e.g. 'rip', '0x401000'). size: max 256 MB. " +
       "outputPath: absolute path; parent directory must exist; file is overwritten silently. " +
       "Returns: { savedTo, bytesWritten }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Start address (hex or symbol, e.g. '0x401000', 'rip')"),
       size: z
@@ -377,6 +392,7 @@ export function registerMemoryTools(server: McpServer): void {
       outputPath: z
         .string()
         .describe("Absolute path for the output file (parent must exist)"),
+    },
     },
     async ({ sessionId, address, size, outputPath }) => {
       try {
@@ -416,14 +432,15 @@ export function registerMemoryTools(server: McpServer): void {
 
   // ── Create minidump ───────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "create_minidump",
-    "Create a Windows minidump (.dmp) of the debuggee process for offline analysis. " +
+    {
+      description: "Create a Windows minidump (.dmp) of the debuggee process for offline analysis. " +
       "dumpType='normal': small file — threads, modules, call stacks. " +
       "dumpType='full': large file — entire process memory (use for full offline analysis). " +
       "outputPath: absolute path; parent directory must exist. " +
       "Returns: { savedTo, fileSize }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       outputPath: z
         .string()
@@ -431,6 +448,7 @@ export function registerMemoryTools(server: McpServer): void {
       dumpType: z
         .enum(["normal", "full"]).optional().default("normal")
         .describe("'normal' = small (threads+modules+stack); 'full' = entire process memory"),
+    },
     },
     async ({ sessionId, outputPath, dumpType }) => {
       try {

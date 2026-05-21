@@ -20,15 +20,16 @@ import type {
 export function registerAnalysisTools(server: McpServer): void {
   // ── Disassemble ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "disassemble",
-    "Disassemble instructions starting at an address or symbol. " +
+    {
+      description: "Disassemble instructions starting at an address or symbol. " +
       "Returns: header (startAddress, functionName, count) followed by lines of " +
       "'address  bytes  mnemonic operands  ; comment'. " +
       "address: hex ('0x401000') or symbol ('main', 'CreateFileW', 'kernel32.CreateFileW'). " +
       "Safe to call while paused or while analysing a loaded module. " +
       "Tip: pass the entryPoint returned by load_executable to inspect the PE entry code immediately.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z
         .string()
@@ -40,6 +41,7 @@ export function registerAnalysisTools(server: McpServer): void {
         .max(5000)
         .default(30)
         .describe("Number of instructions (default 30)"),
+    },
     },
     async ({ sessionId, address, count }) => {
       try {
@@ -74,16 +76,18 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Analyse function ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "analyze_function",
-    "Analyze a function: boundaries, size, instruction count, call graph, and isLeaf flag. " +
+    {
+      description: "Analyze a function: boundaries, size, instruction count, call graph, and isLeaf flag. " +
       "Returns: { address, endAddress, size, instructionCount, callers (who calls this), callees (what this calls), isLeaf }. " +
       "address: any address inside the function, or a symbol name.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z
         .string()
         .describe("Any address inside the function, or its symbol name"),
+    },
     },
     async ({ sessionId, address }) => {
       try {
@@ -106,21 +110,23 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Cross-references ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_cross_references",
-    "Find all cross-references (xrefs) to or from an address. " +
+    {
+      description: "Find all cross-references (xrefs) to or from an address. " +
       "direction='to': who references this address (callers, data readers). " +
       "direction='from': what this address references (callees, data it reads). " +
       "direction='both': both directions. " +
       "Returns: { address, xrefsTo: [{from, to, type, instruction, module}], xrefsFrom: [...] }. " +
       "type values: 'call', 'jump', 'data_read', 'data_write', 'unknown'.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       address: z.string().describe("Target address or symbol"),
       direction: z
         .enum(["to", "from", "both"])
         .default("to")
         .describe("'to' = who references this address, 'from' = what this address references"),
+    },
     },
     async ({ sessionId, address, direction }) => {
       try {
@@ -144,13 +150,14 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── List functions ────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "list_functions",
-    "List all recognized functions in the debuggee: address, name, size, module. " +
+    {
+      description: "List all recognized functions in the debuggee: address, name, size, module. " +
       "module: filter by module name (e.g. 'target.exe'). " +
       "nameFilter: substring match on function name. " +
       "Paginated via offset/limit (default limit=100, max=500).",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
@@ -162,6 +169,7 @@ export function registerAnalysisTools(server: McpServer): void {
         .describe("Substring filter on function name"),
       offset: z.number().int().min(0).default(0).describe("Pagination offset"),
       limit: z.number().int().min(1).max(500).default(100).describe("Max results"),
+    },
     },
     async ({ sessionId, module, nameFilter, offset, limit }) => {
       try {
@@ -184,13 +192,15 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Get modules ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_modules",
-    "List all modules (main EXE + loaded DLLs): name, path, base address, size, entry point, sections. " +
+    {
+      description: "List all modules (main EXE + loaded DLLs): name, path, base address, size, entry point, sections. " +
       "Use after load_executable to see which DLLs are mapped, " +
       "or to find a module's base address for offset calculations.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
+    },
     },
     async ({ sessionId }) => {
       try {
@@ -215,12 +225,13 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Get imports ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_imports",
-    "List imported functions for a module: importing DLL name, function name, ordinal, IAT address. " +
+    {
+      description: "List imported functions for a module: importing DLL name, function name, ordinal, IAT address. " +
       "module: defaults to main executable. dllFilter/functionFilter: substring filters. " +
       "Use analyze_suspicious_apis to cross-reference imports against malware API patterns.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
@@ -234,6 +245,7 @@ export function registerAnalysisTools(server: McpServer): void {
         .string()
         .optional()
         .describe("Filter by function name substring"),
+    },
     },
     async ({ sessionId, module, dllFilter, functionFilter }) => {
       try {
@@ -257,17 +269,19 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Get exports ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_exports",
-    "List exported functions/symbols from a PE module's export table: name, ordinal, address, forwarder. " +
-      "module: required (e.g. 'kernel32.dll'). nameFilter: substring filter on export name.",
     {
+      description: "List exported functions/symbols from a PE module's export table: name, ordinal, address, forwarder. " +
+      "module: required (e.g. 'kernel32.dll'). nameFilter: substring filter on export name.",
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z.string().describe("Module name (e.g. 'kernel32.dll')"),
       nameFilter: z
         .string()
         .optional()
         .describe("Filter by export name substring"),
+    },
     },
     async ({ sessionId, module, nameFilter }) => {
       try {
@@ -291,13 +305,14 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Find strings ──────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "find_strings",
-    "Find ASCII and Unicode strings in the debuggee's mapped memory. " +
+    {
+      description: "Find ASCII and Unicode strings in the debuggee's mapped memory. " +
       "Returns: { totalFound, strings: [{address, value, type, length, referencedBy}], truncated }. " +
       "module: limit search to a specific DLL or EXE. filter: substring match. minLength: default 4. " +
       "Use to quickly locate hardcoded URLs, registry keys, encryption keys, or debug messages.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
@@ -321,6 +336,7 @@ export function registerAnalysisTools(server: McpServer): void {
         .max(10000)
         .default(200)
         .describe("Maximum results (default 200)"),
+    },
     },
     async ({ sessionId, module, filter, minLength, maxResults }) => {
       try {
@@ -350,19 +366,21 @@ export function registerAnalysisTools(server: McpServer): void {
 
   // ── Get PE header info ────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_pe_header",
-    "Parse the PE header of a loaded module. " +
+    {
+      description: "Parse the PE header of a loaded module. " +
       "Returns: machine type, timestamp, imageBase, imageSize, entryPoint, subsystem, " +
       "characteristics, dllCharacteristics, sections (with entropy per section), data directories. " +
       "module: defaults to main executable. " +
       "Use with detect_packing to correlate high-entropy sections with PE structure.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
         .optional()
         .describe("Module name (default: main executable)"),
+    },
     },
     async ({ sessionId, module }) => {
       try {
