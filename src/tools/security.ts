@@ -99,19 +99,21 @@ const SUSPICIOUS_API_DB: Record<string, { apis: string[]; description: string }>
 export function registerSecurityTools(server: McpServer): void {
   // ── Detect packing ────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "detect_packing",
-    "Scan a PE module for signs of packing or obfuscation. " +
+    {
+      description: "Scan a PE module for signs of packing or obfuscation. " +
       "Checks: section entropy (>7.0 = likely packed), section name anomalies, " +
       "import table size (very few imports = packer stub), entry-point section location, known packer signatures. " +
       "Returns: { isPacked, confidence (0–1), packerName, overallEntropy, " +
       "indicators: [{type, description, severity}], sectionEntropies, importCount, entryPointSection }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
         .optional()
         .describe("Module name (default: main executable)"),
+    },
     },
     async ({ sessionId, module }) => {
       try {
@@ -141,15 +143,16 @@ export function registerSecurityTools(server: McpServer): void {
 
   // ── Suspicious API analysis ───────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "analyze_suspicious_apis",
-    "Cross-reference the module's import table against a database of Windows APIs commonly used by malware. " +
+    {
+      description: "Cross-reference the module's import table against a database of Windows APIs commonly used by malware. " +
       "Categories covered: process_injection, process_manipulation, file_system, registry, " +
       "network, crypto, anti_debug, privilege_escalation, hooking, service. " +
       "Returns: { riskLevel (low/medium/high/critical), suspiciousCount, categoriesMatched, " +
       "findings: { <category>: { description, matches: [{function, module, address}] } } }. " +
       "includeAll=true: also include all non-suspicious imports in the response.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
@@ -159,6 +162,7 @@ export function registerSecurityTools(server: McpServer): void {
         .boolean()
         .default(false)
         .describe("Include all imports, not just suspicious ones"),
+    },
     },
     async ({ sessionId, module, includeAll }) => {
       try {
@@ -234,20 +238,22 @@ export function registerSecurityTools(server: McpServer): void {
 
   // ── Anti-debug detection ──────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "detect_anti_debug",
-    "Scan the module for common anti-debugging techniques. " +
+    {
+      description: "Scan the module for common anti-debugging techniques. " +
       "Detects: API checks (IsDebuggerPresent, CheckRemoteDebuggerPresent, NtQueryInformationProcess), " +
       "timing attacks (GetTickCount, QueryPerformanceCounter), PEB flag reads, int 2d/int 3 traps, " +
       "NtSetInformationThread (hide-from-debugger), TLS callbacks. " +
       "Returns: { hasAntiDebug, totalTechniques, " +
       "techniques: [{name, description, addresses, severity, bypass}], tlsCallbacks }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
         .optional()
         .describe("Module name (default: main executable)"),
+    },
     },
     async ({ sessionId, module }) => {
       try {
@@ -279,18 +285,20 @@ export function registerSecurityTools(server: McpServer): void {
 
   // ── Section anomaly check ─────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "check_section_anomalies",
-    "Check PE sections for structural anomalies. " +
+    {
+      description: "Check PE sections for structural anomalies. " +
       "Detects: WX (writable+executable) sections, unusual names, high entropy (>7.0 = packed/encrypted), " +
       "virtual/raw size mismatches (common in unpacking stubs). " +
       "Returns: { sections: [{name, entropy, isExecutable, isWritable, anomalies[]}], totalAnomalies, summary }.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
         .optional()
         .describe("Module name (default: main executable)"),
+    },
     },
     async ({ sessionId, module }) => {
       try {
@@ -324,19 +332,21 @@ export function registerSecurityTools(server: McpServer): void {
 
   // ── Full security report ──────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "generate_security_report",
-    "START HERE for malware triage. Run all four security checks in parallel and produce a consolidated report. " +
+    {
+      description: "START HERE for malware triage. Run all four security checks in parallel and produce a consolidated report. " +
       "Covers: packing detection, suspicious API analysis, anti-debug detection, section anomaly checks. " +
       "Returns a single JSON with: packing, suspiciousApis, antiDebug, sectionAnomalies, totalImports, generatedAt. " +
       "Use this as the first step when analyzing an unknown or potentially malicious PE, " +
       "then call individual tools for deeper investigation of flagged areas.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       module: z
         .string()
         .optional()
         .describe("Module name (default: main executable)"),
+    },
     },
     async ({ sessionId, module }) => {
       try {

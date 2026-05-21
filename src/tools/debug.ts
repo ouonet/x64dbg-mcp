@@ -86,9 +86,10 @@ async function execEnvelope(
 export function registerDebugTools(server: McpServer): void {
   // ── Load executable ───────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "load_executable",
-    "START HERE. Load a PE executable (.exe or .dll) and create a debugging session. " +
+    {
+      description: "START HERE. Load a PE executable (.exe or .dll) and create a debugging session. " +
       "Auto-detects x86/x64 and launches x32dbg or x64dbg accordingly. " +
       "Returns: sessionId, pid, architecture, entryPoint, state, pauseReason, recentEvents (DLL loads, TLS callbacks, exceptions up to first pause), modulesLoaded, bridgePort.\n\n" +
       "NORMAL FLOW (breakOnEntry=true, default):\n" +
@@ -100,7 +101,7 @@ export function registerDebugTools(server: McpServer): void {
       "  You may see pauseReason='tls_callback' between steps 1 and 2 — call continue_execution through each.\n\n" +
       "timedOut=true: process did not pause within 60 s. Check recentEvents for clues (missing DLL, anti-debug). " +
       "Call wait_for_state(expect='paused') to keep waiting, or terminate_session to abort.",
-    {
+      inputSchema: {
       executablePath: z
         .string()
         .describe("Absolute path to the PE executable (.exe or .dll)"),
@@ -116,6 +117,7 @@ export function registerDebugTools(server: McpServer): void {
         .boolean()
         .default(true)
         .describe("Run initial analysis on load (default true)"),
+    },
     },
     async ({ executablePath, commandLineArgs, breakOnEntry, autoAnalyze }) => {
       try {
@@ -288,9 +290,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Attach to running process ─────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "attach_to_process",
-    "Attach to a running process by PID and create a debugging session. " +
+    {
+      description: "Attach to a running process by PID and create a debugging session. " +
       "Auto-detects x86/x64 architecture. " +
       "Returns: sessionId, pid, architecture, entryPoint, state, pauseReason, recentEvents, modulesLoaded, bridgePort.\n\n" +
       "NORMAL FLOW (breakOnEntry=true, default):\n" +
@@ -301,7 +304,7 @@ export function registerDebugTools(server: McpServer): void {
       "     (e.g. 'bp 0x401000'), then continue_execution; or call pause_execution(sessionId) to " +
       "     halt at the current instruction.\n\n" +
       "timedOut=true: attach did not complete within 60 s. Call terminate_session to clean up.",
-    {
+      inputSchema: {
       pid: z.number().int().positive().describe("Process ID to attach to"),
       breakOnEntry: z
         .boolean()
@@ -311,6 +314,7 @@ export function registerDebugTools(server: McpServer): void {
         .boolean()
         .default(true)
         .describe("Run analysis on attach (default true)"),
+    },
     },
     async ({ pid, breakOnEntry, autoAnalyze }) => {
       try {
@@ -479,9 +483,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Continue execution ────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "continue_execution",
-    "Resume a paused debuggee. Runs until the next breakpoint, exception, manual pause, or process exit. " +
+    {
+      description: "Resume a paused debuggee. Runs until the next breakpoint, exception, manual pause, or process exit. " +
       "REQUIRES: state='paused'. Call get_status(sessionId) if unsure of current state. " +
       "Returns: { timedOut, state, pauseReason, terminationReason }.\n\n" +
       "pauseReason in the response tells you why execution stopped:\n" +
@@ -494,7 +499,7 @@ export function registerDebugTools(server: McpServer): void {
       "  null + state='terminated' → process exited; check terminationReason\n\n" +
       "async:true: returns immediately with current snapshot; pair with wait_for_state(expect='paused') to observe the next stop. " +
       "timedOut:true (sync): process still running after timeoutMs; call wait_for_state or terminate_session.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID from load_executable"),
       async: z.boolean().optional().default(false).describe(
         "Return immediately without waiting for the next pause (default false)"
@@ -502,6 +507,7 @@ export function registerDebugTools(server: McpServer): void {
       timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe(
         "Sync-mode wait timeout in ms (default 30 000)"
       ),
+    },
     },
     async ({ sessionId, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
@@ -517,13 +523,14 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Pause execution ───────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "pause_execution",
-    "Interrupt a running debuggee. No-op if already paused — returns current state immediately. " +
+    {
+      description: "Interrupt a running debuggee. No-op if already paused — returns current state immediately. " +
       "Returns: { timedOut, state, pauseReason='manual_pause', terminationReason }. " +
       "If state is unknown, call get_status(sessionId) first — it is always safe. " +
       "async:true: issues the break and returns immediately without waiting for confirmation.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID from load_executable"),
       async: z.boolean().optional().default(false).describe(
         "Return immediately after issuing pause without waiting (default false)"
@@ -531,6 +538,7 @@ export function registerDebugTools(server: McpServer): void {
       timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe(
         "Sync-mode wait timeout in ms (default 30 000)"
       ),
+    },
     },
     async ({ sessionId, async: isAsync, timeoutMs }) => {
       try {
@@ -560,17 +568,19 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Step into ─────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "step_into",
-    "Single-step N instructions, following CALL instructions into callees. " +
+    {
+      description: "Single-step N instructions, following CALL instructions into callees. " +
       "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason='step', terminationReason }. " +
       "After each step the session pauses again with pauseReason='step'. " +
       "Use step_over to skip over CALL instructions instead of entering them.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
       async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
       timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
+    },
     },
     async ({ sessionId, count, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
@@ -586,16 +596,18 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Step over ─────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "step_over",
-    "Single-step N instructions, treating each CALL as a single step (does not enter callees). " +
+    {
+      description: "Single-step N instructions, treating each CALL as a single step (does not enter callees). " +
       "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason='step', terminationReason }. " +
       "Use step_into to trace inside called functions.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       count: z.number().int().min(1).max(1000).default(1).describe("Instructions to step (default 1)"),
       async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
       timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
+    },
     },
     async ({ sessionId, count, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
@@ -611,15 +623,17 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Step out (run until return) ───────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "step_out",
-    "Run until the current function returns (executes to its matching RET instruction). " +
+    {
+      description: "Run until the current function returns (executes to its matching RET instruction). " +
       "REQUIRES: state='paused'. Returns: { timedOut, state, pauseReason, terminationReason }. " +
       "Useful to escape deep call chains and return to a higher-level function.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       async: z.boolean().optional().default(false).describe("Return immediately without waiting for next pause (default false)"),
       timeoutMs: z.number().int().min(0).max(300_000).optional().default(30_000).describe("Sync-mode wait timeout in ms (default 30 000)"),
+    },
     },
     async ({ sessionId, async: isAsync, timeoutMs }) => {
       const stateErr = requirePaused(sessionId);
@@ -635,15 +649,17 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Terminate session ─────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "terminate_session",
-    "Stop the debuggee process and close the debugging session. " +
+    {
+      description: "Stop the debuggee process and close the debugging session. " +
       "Idempotent — safe to call even if the session is already terminated. " +
       "Returns: { status='terminated', sessionId, terminationReason }. " +
       "terminationReason values: 'process_exit', 'detached', 'bridge_lost', 'unknown'. " +
       "Call this to free a session slot when MAX_SESSIONS is reached.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID to terminate"),
+    },
     },
     async ({ sessionId }) => {
       try {
@@ -712,14 +728,16 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Detach session ────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "detach_session",
-    "Detach the debugger from the process without killing it — the target process continues running. " +
+    {
+      description: "Detach the debugger from the process without killing it — the target process continues running. " +
       "Idempotent — safe to call if already terminated or detached. " +
       "Returns: { status='detached', sessionId, terminationReason }. " +
       "Use this instead of terminate_session when you want to leave the target alive after analysis.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID to detach"),
+    },
     },
     async ({ sessionId }) => {
       try {
@@ -791,9 +809,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Wait for state ────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "wait_for_state",
-    "Block until the session reaches a target state, then return a full snapshot. " +
+    {
+      description: "Block until the session reaches a target state, then return a full snapshot. " +
       "Returns: { matched, state, pauseReason, terminationReason, lastEvent, recentEvents }. " +
       "matched=true: condition met within timeoutMs. matched=false: timed out.\n\n" +
       "Common patterns:\n" +
@@ -802,7 +821,7 @@ export function registerDebugTools(server: McpServer): void {
       "  wait_for_state(expect='terminated')                               — wait for process to exit\n\n" +
       "Use after continue_execution(async:true) or load_executable to observe the next stop. " +
       "pauseReasonFilter=[]: special case — never matches (waits until timeout); only use intentionally.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       expect: z
         .enum(["idle", "paused", "running", "terminated"])
@@ -816,6 +835,7 @@ export function registerDebugTools(server: McpServer): void {
       terminationReasonFilter: z
         .array(z.string()).optional()
         .describe("Only wake when terminationReason is one of these values (undefined = any; [] = never match)"),
+    },
     },
     async ({ sessionId, expect, timeoutMs, pauseReasonFilter, terminationReasonFilter }) => {
       try {
@@ -888,9 +908,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Get status (current debugger + session state) ─────────────────────
 
-  server.tool(
+  server.registerTool(
     "get_status",
-    "Query the current session/debugger state. Always safe — never changes debugger state. " +
+    {
+      description: "Query the current session/debugger state. Always safe — never changes debugger state. " +
       "Returns: state, pauseReason, terminationReason, lastEvent, recentEvents, currentIP (when paused), " +
       "bridgeConnected, breakpointCount, executable, pid, architecture, and a hint describing recommended next action.\n\n" +
       "Call this:\n" +
@@ -898,11 +919,12 @@ export function registerDebugTools(server: McpServer): void {
       "  • After a timeout to understand what state execution reached\n" +
       "  • Any time to get the current instruction pointer without reading registers\n\n" +
       "Without sessionId: returns a summary of all active sessions plus a hint to call load_executable.",
-    {
+      inputSchema: {
       sessionId: z
         .string()
         .optional()
         .describe("Session ID (optional — omit to get bridge-level status only)"),
+    },
     },
     async ({ sessionId }) => {
       const status: Record<string, unknown> = {
@@ -979,11 +1001,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── List sessions ─────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "list_sessions",
-    "List all active debugging sessions: id, state, pid, architecture, executable, breakpointCount. " +
-      "Call get_status(sessionId) for detailed state of a specific session.",
-    {},
+    { description: "List all active debugging sessions: id, state, pid, architecture, executable, breakpointCount. " +
+      "Call get_status(sessionId) for detailed state of a specific session." },
     async () => {
       return {
         content: [
@@ -998,18 +1019,20 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Close debugger process ────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "close_debugger",
-    "Terminate all sessions and kill all tracked x64dbg/x32dbg processes. " +
+    {
+      description: "Terminate all sessions and kill all tracked x64dbg/x32dbg processes. " +
       "Works even when the bridge is disconnected. " +
       "Use before deploying updated plugins or when restarting the debugger is needed. " +
       "force=true: also kills any x64dbg.exe/x32dbg.exe not launched by this server via taskkill.",
-    {
+      inputSchema: {
       force: z
         .boolean()
         .optional()
         .default(false)
         .describe("Force-kill via taskkill even if the process was not launched by this MCP server (default false)"),
+    },
     },
     async ({ force }) => {
       const lines: string[] = [];
@@ -1046,22 +1069,24 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Collect breakpoint arguments in a loop ───────────────────────────
 
-  server.tool(
+  server.registerTool(
     "collect_bp_args",
-    "Loop: continue execution → hit breakpoint → read a memory expression → repeat N times. " +
+    {
+      description: "Loop: continue execution → hit breakpoint → read a memory expression → repeat N times. " +
       "Collects the expression value at each hit, returning all values as a list. " +
       "Use to trace repeated calls — e.g. set a BP on CreateFileW with execute_command, " +
       "then call collect_bp_args(expr='utf16@[esp+8]') to log every filename opened. " +
       "Default expr 'ptr_utf16@[esp+4]' reads a wchar_t* from x86 stack offset +4. " +
       "Returns: { totalHits, args: string[], errors: string[] }. " +
       "Prerequisite: session must be paused with at least one breakpoint already set.",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       expr: z.string().optional().describe(
         "Expression to read at each hit: 'ptr_utf16@[esp+4]' (default), 'utf16@<addr>', or any numeric x64dbg expr"
       ),
       maxHits: z.number().optional().describe("Stop after this many hits (default 200)"),
       timeoutSec: z.number().optional().describe("Per-hit timeout in seconds (default 10)"),
+    },
     },
     async ({ sessionId, expr, maxHits, timeoutSec }) => {
       try {
@@ -1083,9 +1108,10 @@ export function registerDebugTools(server: McpServer): void {
 
   // ── Execute raw x64dbg command ────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     "execute_command",
-    "Execute a raw x64dbg script command synchronously and return its console output. " +
+    {
+      description: "Execute a raw x64dbg script command synchronously and return its console output. " +
       "Commands that resume execution (run, go, erun) do NOT wait for the next pause — " +
       "follow with wait_for_state(expect='paused') to observe the result.\n\n" +
       "Key commands:\n" +
@@ -1104,9 +1130,10 @@ export function registerDebugTools(server: McpServer): void {
       "  Analysis:    analyse             — re-analyze current module\n" +
       "  Misc:        graph <addr>        — show CFG; findall 0,\"MZ\" — search\n" +
       "Docs: help.x64dbg.com/commands",
-    {
+      inputSchema: {
       sessionId: z.string().describe("Session ID"),
       command: z.string().describe("x64dbg command, e.g. 'graph 0x401000' or 'findall 0, \"MZ\"'"),
+    },
     },
     async ({ sessionId, command }) => {
       try {
