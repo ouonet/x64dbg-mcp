@@ -1089,8 +1089,8 @@ describe("v1.2.0 type vocabulary", async () => {
     assert.deepEqual(actual, expected);
   });
 
-  test("DebugState (D2) narrowed to 4 values", () => {
-    const expected = ["loading", "running", "paused", "terminated"].sort();
+  test("DebugState (D2) has all 5 values (idle added in v1.2.1)", () => {
+    const expected = ["idle", "loading", "running", "paused", "terminated"].sort();
     const actual = [...(types.DEBUG_STATES as readonly string[])].sort();
     assert.deepEqual(actual, expected);
   });
@@ -1392,7 +1392,7 @@ describe("T14: terminate / detach idempotency + cascade (D14)", async () => {
 
   test("T14: terminate_session is idempotent — second call preserves terminationReason", async () => {
     // Create a session and mark it as already terminated (simulates natural exit before AI reacts)
-    const sess = realSessions14.createLoading("t14_term.exe", "x64", 19997);
+    const sess = realSessions14.createIdle("t14_term.exe", "x64", 19997);
     realSessions14.applyStateChange(sess.id, {
       state: "terminated",
       pauseReason: null,
@@ -1411,7 +1411,7 @@ describe("T14: terminate / detach idempotency + cascade (D14)", async () => {
   });
 
   test("T14: detach_session is idempotent — second call preserves terminationReason", async () => {
-    const sess = realSessions14.createLoading("t14_det.exe", "x64", 19998);
+    const sess = realSessions14.createIdle("t14_det.exe", "x64", 19998);
     realSessions14.applyStateChange(sess.id, {
       state: "terminated",
       pauseReason: null,
@@ -1461,7 +1461,7 @@ describe("T14: terminate / detach idempotency + cascade (D14)", async () => {
     const bridgeClient14 = new BC14("127.0.0.1", bridgePort14);
     await bridgeClient14.connect();
 
-    const sess = realSessions14.createLoading("t14_partial.exe", "x64", bridgePort14);
+    const sess = realSessions14.createIdle("t14_partial.exe", "x64", bridgePort14);
     realBridges14.set(sess.id, bridgeClient14);
     realSessions14.wireClient(sess.id, bridgeClient14);
     // Session needs to be NOT terminated for cleanup to run
@@ -1517,7 +1517,7 @@ describe("T15: read tools state snapshot (D2, D15)", async () => {
   }
 
   test("T15: get_status includes D2 snapshot fields (pauseReason, terminationReason, lastEvent, recentEvents)", async () => {
-    const sess = realSessions15.createLoading("t15_stat.exe", "x64", 20001);
+    const sess = realSessions15.createIdle("t15_stat.exe", "x64", 20001);
     realSessions15.applyStateChange(sess.id, {
       state: "paused", pauseReason: "breakpoint", terminationReason: null,
     });
@@ -1541,7 +1541,7 @@ describe("T15: read tools state snapshot (D2, D15)", async () => {
   });
 
   test("T15: list_sessions includes terminated session during 30s retention window", async () => {
-    const sess = realSessions15.createLoading("t15_list.exe", "x64", 20002);
+    const sess = realSessions15.createIdle("t15_list.exe", "x64", 20002);
     realSessions15.applyStateChange(sess.id, {
       state: "terminated", pauseReason: null, terminationReason: "process_exit",
     });
@@ -1595,7 +1595,7 @@ describe("T16: wait_for_state tool (D6)", async () => {
   }
 
   test("T16: already-matching condition returns matched:true in < 10ms (no wait)", async () => {
-    const sess = realSessions16.createLoading("t16_imm.exe", "x64", 20010);
+    const sess = realSessions16.createIdle("t16_imm.exe", "x64", 20010);
     realSessions16.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer16();
     try {
@@ -1615,7 +1615,7 @@ describe("T16: wait_for_state tool (D6)", async () => {
   });
 
   test("T16: timeout returns matched:false with current state", async () => {
-    const sess = realSessions16.createLoading("t16_to.exe", "x64", 20011);
+    const sess = realSessions16.createIdle("t16_to.exe", "x64", 20011);
     realSessions16.applyStateChange(sess.id, { state: "running", pauseReason: null, terminationReason: null });
     const server = createMcpServer16();
     try {
@@ -1635,7 +1635,7 @@ describe("T16: wait_for_state tool (D6)", async () => {
   });
 
   test("T16: empty pauseReasonFilter [] always times out even when state matches", async () => {
-    const sess = realSessions16.createLoading("t16_filt.exe", "x64", 20012);
+    const sess = realSessions16.createIdle("t16_filt.exe", "x64", 20012);
     realSessions16.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer16();
     try {
@@ -1651,7 +1651,7 @@ describe("T16: wait_for_state tool (D6)", async () => {
   });
 
   test("T16: wakes when stateChange satisfies condition, concurrent waiters all wake", async () => {
-    const sess = realSessions16.createLoading("t16_conc.exe", "x64", 20013);
+    const sess = realSessions16.createIdle("t16_conc.exe", "x64", 20013);
     realSessions16.applyStateChange(sess.id, { state: "running", pauseReason: null, terminationReason: null });
     const server = createMcpServer16();
     try {
@@ -1715,7 +1715,7 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
   }
 
   test("T17: save_memory_dump rejects relative path", async () => {
-    const sess = realSessions17.createLoading("t17_a.exe", "x64", 20020);
+    const sess = realSessions17.createIdle("t17_a.exe", "x64", 20020);
     realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer17();
     try {
@@ -1731,7 +1731,7 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
   });
 
   test("T17: save_memory_dump rejects path pointing to existing directory", async () => {
-    const sess = realSessions17.createLoading("t17_b.exe", "x64", 20021);
+    const sess = realSessions17.createIdle("t17_b.exe", "x64", 20021);
     realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer17();
     try {
@@ -1747,7 +1747,7 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
   });
 
   test("T17: save_memory_dump rejects parent directory that does not exist", async () => {
-    const sess = realSessions17.createLoading("t17_c.exe", "x64", 20022);
+    const sess = realSessions17.createIdle("t17_c.exe", "x64", 20022);
     realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer17();
     try {
@@ -1763,7 +1763,7 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
   });
 
   test("T17: save_memory_dump rejects size > 256 MB", async () => {
-    const sess = realSessions17.createLoading("t17_d.exe", "x64", 20023);
+    const sess = realSessions17.createIdle("t17_d.exe", "x64", 20023);
     realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
     const server = createMcpServer17();
     try {
@@ -1812,7 +1812,7 @@ describe("T17: save_memory_dump + create_minidump (D8)", async () => {
     const bc17 = new BC17("127.0.0.1", bridgePort17);
     await bc17.connect();
 
-    const sess = realSessions17.createLoading("t17_e.exe", "x64", bridgePort17);
+    const sess = realSessions17.createIdle("t17_e.exe", "x64", bridgePort17);
     realBridges17.set(sess.id, bc17);
     realSessions17.wireClient(sess.id, bc17);
     realSessions17.applyStateChange(sess.id, { state: "paused", pauseReason: "breakpoint", terminationReason: null });
@@ -1855,7 +1855,7 @@ describe("T18: notification emission (D7)", async () => {
     const events: unknown[] = [];
     const handler = (...args: unknown[]) => events.push(args);
     try {
-      sess = realSessions18.createLoading("t18_a.exe", "x64", 20030);
+      sess = realSessions18.createIdle("t18_a.exe", "x64", 20030);
       notifBus18.on("debugEvent", handler);
       realSessions18.applyDebugEvent(sess.id, {
         kind: "dll_load", bpType: null, bpKind: null,
@@ -1877,7 +1877,7 @@ describe("T18: notification emission (D7)", async () => {
     const changes: unknown[] = [];
     const handler = (...args: unknown[]) => changes.push(args);
     try {
-      sess = realSessions18.createLoading("t18_b.exe", "x64", 20031);
+      sess = realSessions18.createIdle("t18_b.exe", "x64", 20031);
       notifBus18.on("stateChange", handler);
       realSessions18.applyStateChange(sess.id, {
         state: "paused", pauseReason: "breakpoint", terminationReason: null,
@@ -1897,7 +1897,7 @@ describe("T18: notification emission (D7)", async () => {
     const stateChanges: unknown[] = [];
     const handler = (...args: unknown[]) => stateChanges.push(args);
     try {
-      sess = realSessions18.createLoading("t18_c.exe", "x64", 20032);
+      sess = realSessions18.createIdle("t18_c.exe", "x64", 20032);
       notifBus18.on("stateChange", handler);
       realSessions18.applyDebugEvent(sess.id, {
         kind: "dll_load", bpType: null, bpKind: null,
@@ -1916,7 +1916,7 @@ describe("T18: notification emission (D7)", async () => {
     let count = 0;
     const handler = () => { count++; };
     try {
-      sess = realSessions18.createLoading("t18_d.exe", "x64", 20033);
+      sess = realSessions18.createIdle("t18_d.exe", "x64", 20033);
       notifBus18.on("debugEvent", handler);
       for (let i = 0; i < 5; i++) {
         realSessions18.applyDebugEvent(sess.id, {
@@ -1972,12 +1972,12 @@ describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => 
     }
   });
 
-  test("T13: createLoading creates session with state:loading and null pauseReason", () => {
-    const sess = realSessions13.createLoading("t13_test.exe", "x64", 19994);
+  test("T13: createIdle creates session with state:idle and null pauseReason", () => {
+    const sess = realSessions13.createIdle("t13_test.exe", "x64", 19994);
     try {
-      assert.equal(sess.state, "loading", "createLoading must set state to 'loading'");
-      assert.equal(sess.pauseReason, null, "createLoading must set pauseReason to null");
-      assert.equal(sess.pid, 0, "createLoading must set pid to 0 (unknown until load)");
+      assert.equal(sess.state, "idle", "createIdle must set state to 'idle'");
+      assert.equal(sess.pauseReason, null, "createIdle must set pauseReason to null");
+      assert.equal(sess.pid, 0, "createIdle must set pid to 0 (unknown until load)");
       assert.equal(sess.terminationReason, null, "terminationReason must be null");
       assert.deepEqual(sess.recentEvents, [], "recentEvents must start empty");
     } finally {
@@ -1985,8 +1985,9 @@ describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => 
     }
   });
 
-  test("T13: waitForStateChange on loading session times out and preserves state:loading", async () => {
-    const sess = realSessions13.createLoading("t13_timeout.exe", "x64", 19995);
+  test("T13: waitForStateChange on idle session times out and preserves state:idle", async () => {
+    const sess = realSessions13.createIdle("t13_timeout.exe", "x64", 19995);
+    realSessions13.applyStateChange(sess.id, { state: "loading", pauseReason: null, terminationReason: null });
     try {
       const start = Date.now();
       const woken = await realSessions13.waitForStateChange(sess.id, 100);
@@ -2003,7 +2004,8 @@ describe("T13: lifecycle tool returns + 60 s safety timeout (D13)", async () => 
   });
 
   test("T13: waitForStateChange on loading session wakes on applyStateChange push", async () => {
-    const sess = realSessions13.createLoading("t13_success.exe", "x64", 19996);
+    const sess = realSessions13.createIdle("t13_success.exe", "x64", 19996);
+    realSessions13.applyStateChange(sess.id, { state: "loading", pauseReason: null, terminationReason: null });
     try {
       // Simulate bridge pushing stateChange after 25ms (like T6 push channel)
       setTimeout(() => {
