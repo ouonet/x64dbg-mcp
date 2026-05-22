@@ -13,6 +13,47 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-22
+
+### Added
+
+- **Live state polling in Python bridge** — background thread polls x64dbg state every 100 ms and
+  pushes `stateChange` events to all connected clients. Covers state transitions driven by the
+  x64dbg UI or external events between MCP commands (e.g. user clicks Run/Pause, process exits
+  naturally).
+- **`debug.getState` bridge method** — queried by the TS server immediately after the probe
+  handshake succeeds (`"ready"` event) to synchronise initial session state.
+- **Active health check for orphaned sessions** — detects sessions whose bridge connection was
+  silently lost and terminates them with `terminationReason: "bridge_lost"`.
+- **`"idle"` session state** — initial state when the bridge is connected but no debuggee has been
+  loaded yet. Enables a clear `idle → loading → paused/running` lifecycle. After a debuggee exits
+  the session returns to `"idle"` rather than being torn down.
+- **`"ready"` event on `BridgeClient`** — emitted after the `protocol.probe` handshake succeeds;
+  callers can now reliably schedule post-connect work without racing the probe.
+
+### Fixed
+
+- `MAX_SESSIONS` cap was not enforced in the tool layer for concurrent `load_executable` /
+  `attach_to_process` calls — now checked atomically before port allocation.
+- `load_executable` timeout path now includes richer diagnostics (`state`, `pauseReason`,
+  `recentEvents`) when the 60 s safety timer fires.
+- `bridges.terminate()` now passes `"bridge_lost"` as `terminationReason` when a bridge
+  disconnects unexpectedly, rather than leaving it as `"unknown"`.
+
+### Changed
+
+- `SessionManager.createLoading()` renamed to `createIdle()`; initial session state is now
+  `"idle"`. `applyStateChange({ state: "loading" })` is called just before `debug.load` /
+  `debug.attach` fires, preserving the full `idle → loading → paused/running` sequence.
+- `DEBUG_STATES` enum extended to 5 values: `"idle"`, `"loading"`, `"running"`, `"paused"`,
+  `"terminated"`.
+- All 38 MCP tool descriptions rewritten for AI agent clarity — each description now includes
+  prerequisites (required session state), return value shape, `pauseReason` semantics, and
+  recommended next-action guidance. Notably `load_executable` and `attach_to_process` now
+  document the `system_breakpoint` intermediate pause and the normal load flow.
+- Migrated all 38 tool registrations from the deprecated `server.tool()` overload to
+  `server.registerTool()` (MCP SDK ≥ 1.x canonical API).
+
 ## [1.2.0] - 2026-05-18
 
 ### Breaking Changes
