@@ -15,7 +15,7 @@ import { logger } from "./logger.js";
 import { McpError, ErrorCode } from "./errors.js";
 
 const BRIDGE_POLL_INTERVAL_MS = 500;
-const BRIDGE_POLL_TIMEOUT_MS = 30_000;
+const BRIDGE_POLL_TIMEOUT_MS = 60_000; // Increased from 30s for slow/first-time x32dbg startup
 
 /** PE machine types (COFF header Machine field) */
 const IMAGE_FILE_MACHINE_I386  = 0x014c; // x86

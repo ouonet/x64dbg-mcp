@@ -14,6 +14,14 @@ export class BridgeRegistry {
   private clients = new Map<string, BridgeClient>();
 
   set(sessionId: string, client: BridgeClient): void {
+    this.clients.set(sessionId, client);
+  }
+
+  /**
+   * Wire auto-termination on disconnect. Call AFTER the session is successfully
+   * connected to avoid premature termination during connection failures.
+   */
+  wireDisconnectHandler(sessionId: string, client: BridgeClient): void {
     client.on("disconnected", () => {
       logger.error(
         `Bridge for session ${sessionId} disconnected — terminating session`,
@@ -31,8 +39,6 @@ export class BridgeRegistry {
     client.on("reconnected", () => {
       logger.info(`Bridge for session ${sessionId} reconnected`);
     });
-
-    this.clients.set(sessionId, client);
   }
 
   get(sessionId: string): BridgeClient {
