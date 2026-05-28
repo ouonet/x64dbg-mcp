@@ -397,9 +397,16 @@ export async function launchDebuggerForAttachOnPort(
     throw new Error(`x64dbg installation not found: ${config.x64dbgPath}`);
   }
 
-  const dbgExe = resolveDebuggerExe(arch);
+  let dbgExe: string;
+  try {
+    dbgExe = resolveDebuggerExe(arch);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to resolve ${arch} debugger: ${msg}`);
+  }
 
   logger.info(`Launching ${arch} debugger on port ${port} for attaching to PID ${pid}`);
+  logger.info(`Debugger executable: ${dbgExe}`);
 
   const child = spawn(dbgExe, [], {
     detached: true,
@@ -419,7 +426,15 @@ export async function launchDebuggerForAttachOnPort(
   child.unref();
 
   logger.info(`Debugger spawned (pid=${child.pid}, port=${port}), waiting for bridge...`);
-  await waitForBridge(config.bridgeHost, port);
+
+  try {
+    await waitForBridge(config.bridgeHost, port);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Bridge failed to become reachable on port ${port}: ${msg}`);
+    throw err;
+  }
+
   // Same settle window as launchDebuggerOnPort to ride out the bridge's
   // listen-vs-accept race.
   await new Promise((r) => setTimeout(r, 300));
