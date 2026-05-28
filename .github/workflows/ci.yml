@@ -92,6 +92,8 @@ jobs:
     runs-on: windows-latest
     needs: [ts, python, loader]
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -113,7 +115,8 @@ jobs:
           name: prebuilt-loaders
           path: plugin/loader/prebuilt/
 
-      - name: Publish
+      - name: Publish to npm (via OIDC)
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
