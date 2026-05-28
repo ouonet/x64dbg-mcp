@@ -540,7 +540,8 @@ export function detectProcessArchitecture(pid: number): "x86" | "x64" {
     }
 
     return detectPEArchitecture(exePath);
-  } catch (err: any) {
-    throw new Error(`Failed to detect architecture for PID ${pid}: ${err.message}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to detect architecture for PID ${pid}: ${msg}`);
   }
 }
