@@ -267,7 +267,7 @@ _EVENT_KIND_TO_PAUSE_REASON: Dict[str, str] = {
 
 def _new_session_state() -> Dict[str, Any]:
     return {
-        "state": "idle",
+        "state": "loading",
         "pauseReason": None,
         "terminationReason": None,
         "lastEvent": None,
