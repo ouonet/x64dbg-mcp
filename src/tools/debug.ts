@@ -4,6 +4,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { execSync } from "child_process";
+import fs from "fs";
 import { z } from "zod";
 import { BridgeClient } from "../bridge.js";
 import { bridges, bridgeFor } from "../bridgeRegistry.js";
@@ -125,6 +126,18 @@ export function registerDebugTools(server: McpServer): void {
           .trim()
           .replace(/^['"]|['"]$/g, "")
           .trim();
+
+        // 0. Pre-check: x64dbg installation
+        if (!fs.existsSync(config.x64dbgPath)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Error: x64dbg not installed. Expected at: ${config.x64dbgPath}. ` +
+                `Set X64DBG_PATH environment variable or install x64dbg.`,
+            }],
+            isError: true,
+          };
+        }
 
         // 1. Cap check
         const activeSessions = sessions.list().filter((s) => s.state !== "terminated");
@@ -318,6 +331,21 @@ export function registerDebugTools(server: McpServer): void {
     },
     async ({ pid, breakOnEntry, autoAnalyze }) => {
       try {
+        // 0. Pre-check: x64dbg installation
+        logger.info(`attach_to_process(${pid}): starting, x64dbg path = ${config.x64dbgPath}`);
+        if (!fs.existsSync(config.x64dbgPath)) {
+          logger.error(`x64dbg directory not found at ${config.x64dbgPath}`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Error: x64dbg not installed. Expected at: ${config.x64dbgPath}. ` +
+                `Set X64DBG_PATH environment variable or install x64dbg.`,
+            }],
+            isError: true,
+          };
+        }
+        logger.info(`✓ x64dbg directory exists`);
+
         // 1. Cap check
         const activeSessions = sessions.list().filter((s) => s.state !== "terminated");
         if (activeSessions.length >= config.maxSessions) {
@@ -353,7 +381,19 @@ export function registerDebugTools(server: McpServer): void {
         // 3. Allocate port + spawn debugger
         const port = await pickFreePort();
         logger.info(`attach_to_process: allocated port ${port} for PID ${pid}`);
-        const child = await launchDebuggerForAttachOnPort(pid, targetArch, port);
+        let child;
+        try {
+          child = await launchDebuggerForAttachOnPort(pid, targetArch, port);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Error: Failed to launch debugger for PID ${pid}: ${msg}`,
+            }],
+            isError: true,
+          };
+        }
 
         // 4. Create session in "idle" state and wire events BEFORE connecting,
         //    so push events from the first packet are captured.
