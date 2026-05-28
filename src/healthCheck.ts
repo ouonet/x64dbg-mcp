@@ -23,6 +23,12 @@ export function startHealthCheck(): void {
 
     for (const session of activeSessions) {
       try {
+        // Skip sessions in "loading" state — the bridge is blocked executing a
+        // long-running command (StopDebug / InitDebug / AttachDebugger) that
+        // can legitimately take 15-60 s.  Pinging now would queue behind the
+        // blocked command, time out, and incorrectly kill the session.
+        if (session.state === "loading") continue;
+
         // Try to get the bridge client
         if (!bridges.has(session.id)) {
           logger.warn(
@@ -46,19 +52,11 @@ export function startHealthCheck(): void {
         try {
           const startTime = Date.now();
 
-          // Use Promise.race for timeout
-          await Promise.race([
-            bridge.call<{ protocolVersion: string }>(
-              "protocol.probe",
-              {}
-            ),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("Bridge ping timeout")),
-                BRIDGE_PING_TIMEOUT_MS
-              )
-            ),
-          ]);
+          await bridge.call<{ protocolVersion: string }>(
+            "protocol.probe",
+            {},
+            BRIDGE_PING_TIMEOUT_MS
+          );
 
           const elapsed = Date.now() - startTime;
 

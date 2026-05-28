@@ -169,19 +169,12 @@ export function registerDebugTools(server: McpServer): void {
           throw new Error(`launchDebuggerOnPort failed: ${err}`);
         }
 
-        // 4. Connect a fresh BridgeClient to the new x64dbg.
-        //    Register the 'ready' handler BEFORE connect() so it fires correctly —
-        //    'ready' is emitted inside connect() before the Promise resolves.
+        // 4. Create session in "idle" state
         const client = new BridgeClient(config.bridgeHost, port);
-
-        // 5. Create session in "idle" state and wire push events before connecting,
-        //    so stateChange / debugEvent pushes are captured from the first packet.
         const session = sessions.createIdle(executablePath, arch, port);
-        bridges.set(session.id, client);
         rememberDebuggerForSession(session.id, child);
-        sessions.wireClient(session.id, client);
 
-        // Fetch bridge's actual state once the probe handshake succeeds.
+        // 4a. Set up ready handler BEFORE connect (must fire before we register to bridges)
         client.once("ready", () => {
           void (async () => {
             try {
@@ -203,13 +196,21 @@ export function registerDebugTools(server: McpServer): void {
           })();
         });
 
+        // 4b. Try to connect
         try {
           await client.connect();
         } catch (err) {
           try { child.kill(); } catch { /* ignore */ }
+          // Stop reconnect loop before terminate to prevent "Bridge disconnecting" cascades
+          try { await client.disconnect(); } catch { /* ignore */ }
           await sessions.terminate(session.id, "unknown");
           throw new Error(`Bridge connect failed on port ${port}: ${err}`);
         }
+
+        // 4c. Only register to bridges and wire events AFTER successful connection
+        bridges.set(session.id, client);
+        sessions.wireClient(session.id, client);
+        bridges.wireDisconnectHandler(session.id, client);
 
         // Transition idle → loading just before debug.load fires.
         sessions.applyStateChange(session.id, { state: "loading", pauseReason: null, terminationReason: null });
@@ -395,16 +396,13 @@ export function registerDebugTools(server: McpServer): void {
           };
         }
 
-        // 4. Create session in "idle" state and wire events BEFORE connecting,
-        //    so push events from the first packet are captured.
+        // 4. Create session in "idle" state
         const client = new BridgeClient(config.bridgeHost, port);
         const session = sessions.createIdle(`<attached-pid-${pid}>`, targetArch, port);
         sessions.updatePid(session.id, pid);
-        bridges.set(session.id, client);
         rememberDebuggerForSession(session.id, child);
-        sessions.wireClient(session.id, client);
 
-        // Fetch bridge state once probe handshake succeeds (registered before connect).
+        // 4a. Set up ready handler BEFORE connect (must fire before we register to bridges)
         client.once("ready", () => {
           void (async () => {
             try {
@@ -426,13 +424,21 @@ export function registerDebugTools(server: McpServer): void {
           })();
         });
 
+        // 4b. Try to connect
         try {
           await client.connect();
         } catch (err) {
           try { child.kill(); } catch { /* ignore */ }
+          // Stop reconnect loop before terminate to prevent "Bridge disconnecting" cascades
+          try { await client.disconnect(); } catch { /* ignore */ }
           await sessions.terminate(session.id, "unknown");
           throw err;
         }
+
+        // 4c. Only register to bridges and wire events AFTER successful connection
+        bridges.set(session.id, client);
+        sessions.wireClient(session.id, client);
+        bridges.wireDisconnectHandler(session.id, client);
 
         // Transition idle → loading just before debug.attach fires.
         sessions.applyStateChange(session.id, { state: "loading", pauseReason: null, terminationReason: null });
