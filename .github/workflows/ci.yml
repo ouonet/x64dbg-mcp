@@ -91,19 +91,24 @@ jobs:
   # ── Release: publish to npm with prebuilt binaries ────────────────────────
   release:
     name: Publish to npm
-    runs-on: windows-latest
+    # 强烈建议改为 ubuntu-latest 以确保 npm provenance 签名 100% 成功
+    runs-on: ubuntu-latest 
     needs: [ts, python, loader]
     if: startsWith(github.ref, 'refs/tags/v')
     environment: x64dbg
+    
+    # 必须同时声明以下两个权限
     permissions:
-      id-token: write
+      id-token: write      # OIDC 换取 npm 凭证必填
+      contents: read       # 允许 checkout 步骤读取代码（必须加）
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
+          # 移除了 registry-url，让 OIDC 机制完全接管
           cache: npm
 
       - name: Install dependencies
@@ -116,9 +121,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: prebuilt-loaders
+          # 如果换成 ubuntu-latest，注意检查路径的大小写和斜杠
           path: plugin/loader/prebuilt/
 
       - name: Publish to npm (via OIDC)
+        # 精简了发布命令，直接带上 --provenance 即可
         run: npm publish --access public --provenance
-        env:
-          NPM_CONFIG_PROVENANCE: true
