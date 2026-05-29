@@ -94,6 +94,7 @@ jobs:
     runs-on: windows-latest
     needs: [ts, python, loader]
     if: startsWith(github.ref, 'refs/tags/v')
+    environment: x64dbg
     permissions:
       id-token: write
     steps:
