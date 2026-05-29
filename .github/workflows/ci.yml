@@ -118,6 +118,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: prebuilt-loaders
+          # 如果换成 ubuntu-latest，注意检查路径的大小写和斜杠
           path: plugin/loader/prebuilt/
 
       - name: Publish to npm (via OIDC)
