@@ -103,7 +103,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Install dependencies
@@ -119,6 +118,7 @@ jobs:
           path: plugin/loader/prebuilt/
 
       - name: Publish to npm (via OIDC)
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
           NPM_CONFIG_PROVENANCE: true
