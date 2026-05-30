@@ -106,6 +106,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Install dependencies
@@ -118,14 +119,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: prebuilt-loaders
-          # 如果换成 ubuntu-latest，注意检查路径的大小写和斜杠
           path: plugin/loader/prebuilt/
 
       - name: Publish to npm (via OIDC)
-        # 精简了发布命令，直接带上 --provenance 即可
-        run: |
-          rm -f .npmrc
-          npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
+        run: npm publish --provenance --access public
