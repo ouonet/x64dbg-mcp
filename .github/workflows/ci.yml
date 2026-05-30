@@ -122,4 +122,6 @@ jobs:
           path: plugin/loader/prebuilt/
 
       - name: Publish to npm (via OIDC)
-        run: npm publish --provenance --access public
+        run: |
+          npm config delete //registry.npmjs.org/:_authToken
+          npm publish --provenance --access public
