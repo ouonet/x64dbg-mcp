@@ -105,7 +105,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
 
@@ -121,17 +121,7 @@ jobs:
           name: prebuilt-loaders
           path: plugin/loader/prebuilt/
 
-      - name: Get OIDC token with npm audience
-        id: get_oidc_token
-        run: |
-          OIDC_TOKEN=$(curl -sSf \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://npm.com" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
-          echo "::add-mask::${OIDC_TOKEN}"
-          echo "token=${OIDC_TOKEN}" >> "${GITHUB_OUTPUT}"
-
       - name: Publish to npm (via OIDC)
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ steps.get_oidc_token.outputs.token }}
